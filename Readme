@@ -1,0 +1,53 @@
+# DockerPulse
+
+**Live Docker Compose status in your GNOME top bar — lightweight and focused.**
+
+DockerPulse is a minimal GNOME Shell extension that shows the real-time health of your Docker Compose project directly in the top bar.  
+No heavy dashboards. No constant high CPU usage. Just a clean status indicator you can glance at while working.
+
+Perfect when your stack is running in a terminal and you still want to know if everything is healthy.
+
+---
+
+## Features
+
+- **Top-bar indicator** with color-coded status:
+  - 🟢 Green → All containers running
+  - 🟡 Yellow → Partial / restarting
+  - 🔴 Red → Stack down
+  - ⚪ Grey → Docker daemon not available
+- Shows running count (e.g. `3/3`)
+- Click to open a simple popup with:
+  - List of containers + status
+  - Quick actions (Restart stack, Stop, Open logs, Open terminal)
+- **Very low resource usage**
+  - Uses `docker events` (event-driven) + light polling every 20–30s
+  - Only monitors **one specific Compose project**
+  - Caches status and updates only when something changes
+- Works with Docker Compose v2
+
+---
+
+## Screenshots
+
+> Add screenshots here later  
+> - Top-bar indicator (different states)  
+> - Popup menu with container list  
+> - Preferences window
+
+---
+
+## Installation
+
+### Requirements
+- Ubuntu / GNOME 46+
+- Docker + Docker Compose
+- Your user must be in the `docker` group
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/dockerpulse.git
+cd dockerpulse
+
+# Install
+make install
