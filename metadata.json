@@ -1,0 +1,10 @@
+{
+  "uuid": "dockerpulse@gnome.org",
+  "name": "DockerPulse",
+  "description": "Live Docker Compose status in your GNOME top bar — lightweight and focused.",
+  "shell-version": [
+    "46",
+    "47"
+  ],
+  "url": "https://github.com/yourusername/dockerpulse"
+}
