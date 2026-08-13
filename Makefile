@@ -1,21 +1,19 @@
-UUID = dockerpulse@dockerpulse.local
-INSTALL_DIR = $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
+UUID = dockerpulse@github.com
+EXT_DIR = $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
-.PHONY: all install clean
+.PHONY: all compile install clean
 
-all:
-	@echo "Run 'make install' to install the extension."
+all: compile
 
-install:
-	mkdir -p $(INSTALL_DIR)
-	cp extension.js metadata.json $(INSTALL_DIR)/
-	# Only copy config.json if it doesn't already exist in the install dir, to preserve user settings
-	if [ ! -f $(INSTALL_DIR)/config.json ]; then \
-		cp config.json $(INSTALL_DIR)/; \
-	fi
-	@echo "DockerPulse installed successfully to $(INSTALL_DIR)."
-	@echo "Please restart GNOME Shell or reload extensions to activate."
+compile:
+	glib-compile-schemas schemas/
+
+install: compile
+	mkdir -p $(EXT_DIR)
+	cp -r extension.js prefs.js metadata.json stylesheet.css schemas/ $(EXT_DIR)/
+	glib-compile-schemas $(EXT_DIR)/schemas/
+	@echo "Extension installed successfully to $(EXT_DIR)."
 
 clean:
-	rm -rf $(INSTALL_DIR)
-	@echo "DockerPulse extension removed."
+	rm -f schemas/gschemas.compiled
+	rm -rf $(EXT_DIR)
