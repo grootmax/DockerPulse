@@ -1,0 +1,10 @@
+{
+  "uuid": "dockerpulse@dockerpulse.local",
+  "name": "DockerPulse",
+  "description": "Simple top-bar Docker Compose monitor & terminal launcher",
+  "shell-version": [
+    "46",
+    "47"
+  ],
+  "url": "https://github.com/example/dockerpulse"
+}
