@@ -10,7 +10,7 @@ compile:
 
 install: compile
 	mkdir -p $(EXT_DIR)
-	cp -r extension.js prefs.js metadata.json stylesheet.css schemas/ $(EXT_DIR)/
+	cp -r extension.js prefs.js metadata.json stylesheet.css parent_monitor_wrapper.py schemas/ $(EXT_DIR)/
 	glib-compile-schemas $(EXT_DIR)/schemas/
 	@echo "Extension installed successfully to $(EXT_DIR)."
 

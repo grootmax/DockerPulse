@@ -1,0 +1,10 @@
+{
+  "name": "dockerpulse",
+  "version": "1.0.0",
+  "description": "Live Docker Compose status in your GNOME top bar",
+  "main": "extension.js",
+  "scripts": {
+    "test": "node --experimental-vm-modules $(which jest)"
+  },
+  "type": "module"
+}
