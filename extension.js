@@ -9,12 +9,38 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+function getSettingString(settings, key, fallback) {
+    if (!settings) return fallback;
+    try {
+        return settings.get_string(key) || fallback;
+    } catch (e) {
+        console.error(`[DockerPulse] Failed to get string for key "${key}":`, e);
+        return fallback;
+    }
+}
+
+function getSettingInt(settings, key, fallback) {
+    if (!settings) return fallback;
+    try {
+        return settings.get_int(key);
+    } catch (e) {
+        console.error(`[DockerPulse] Failed to get int for key "${key}":`, e);
+        return fallback;
+    }
+}
+
 const DockerPulseIndicator = GObject.registerClass(
 class DockerPulseIndicator extends PanelMenu.Button {
     _init(extension) {
         super._init(0.0, 'DockerPulse');
         this._extension = extension;
-        this._settings = extension.getSettings();
+        
+        try {
+            this._settings = extension.getSettings();
+        } catch (e) {
+            console.error('[DockerPulse] GSettings not available. Using fallback configurations.', e);
+            this._settings = null;
+        }
 
         // Create container box
         this._box = new St.BoxLayout({
@@ -48,29 +74,33 @@ class DockerPulseIndicator extends PanelMenu.Button {
         });
 
         // Watch settings changes
-        this._settingsId = this._settings.connect('changed::project-path', () => {
-            this._onSettingsChanged();
-        });
+        if (this._settings) {
+            this._settingsId = this._settings.connect('changed', () => {
+                this._onSettingsChanged();
+            });
+        }
 
-        // Initialize state
+        // Initialize state (this sets up poll timer & streams & cached project name)
         this._onSettingsChanged();
-
-        // Start background fallback query (timer)
-        this._pollTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 25, () => {
-            this._refreshState();
-            return GLib.SOURCE_CONTINUE;
-        });
     }
 
     _onSettingsChanged() {
-        this._projectPath = this._settings.get_string('project-path') || '';
+        this._projectPath = getSettingString(this._settings, 'project-path', '');
         
         // Stop current stream
         this._stopEventStream();
 
+        // Update poll timer
+        this._updatePollTimer();
+
         if (this._projectPath) {
-            // Determine project name from path
-            this._cachedProjectName = this._projectPath.split('/').pop() || 'DockerPulse';
+            // Determine project name from settings, fallback to path, then "DockerPulse"
+            let nameSetting = getSettingString(this._settings, 'project-name', '');
+            if (nameSetting) {
+                this._cachedProjectName = nameSetting;
+            } else {
+                this._cachedProjectName = this._projectPath.split('/').pop() || 'DockerPulse';
+            }
             // Start event stream
             this._startEventStream();
         } else {
@@ -81,6 +111,24 @@ class DockerPulseIndicator extends PanelMenu.Button {
         }
         
         this._refreshState();
+    }
+
+    _updatePollTimer() {
+        // Remove existing timer
+        if (this._pollTimerId) {
+            GLib.source_remove(this._pollTimerId);
+            this._pollTimerId = null;
+        }
+
+        let interval = getSettingInt(this._settings, 'poll-interval', 25);
+        if (interval < 1) {
+            interval = 25; // Safe guard
+        }
+
+        this._pollTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, interval, () => {
+            this._refreshState();
+            return GLib.SOURCE_CONTINUE;
+        });
     }
 
     _stopEventStream() {
@@ -484,7 +532,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
     destroy() {
         this._stopEventStream();
-        if (this._settingsId) {
+        if (this._settings && this._settingsId) {
             this._settings.disconnect(this._settingsId);
             this._settingsId = null;
         }
