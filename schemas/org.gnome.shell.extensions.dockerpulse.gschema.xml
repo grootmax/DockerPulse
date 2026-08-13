@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.dockerpulse" path="/org/gnome/shell/extensions/dockerpulse/">
+    <key name="project-path" type="s">
+      <default>''</default>
+      <summary>Docker Compose Project Path</summary>
+      <description>The absolute path of the Docker Compose project folder to monitor.</description>
+    </key>
+  </schema>
+</schemalist>

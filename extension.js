@@ -1,0 +1,515 @@
+import GObject from 'gi://GObject';
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import Clutter from 'gi://Clutter';
+import St from 'gi://St';
+
+import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+
+const DockerPulseIndicator = GObject.registerClass(
+class DockerPulseIndicator extends PanelMenu.Button {
+    _init(extension) {
+        super._init(0.0, 'DockerPulse');
+        this._extension = extension;
+        this._settings = extension.getSettings();
+
+        // Create container box
+        this._box = new St.BoxLayout({
+            style_class: 'panel-status-menu-box',
+        });
+
+        // Icon / Emoji Label
+        this._statusLabel = new St.Label({
+            text: '⚪',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._box.add_child(this._statusLabel);
+
+        // Count Label
+        this._countLabel = new St.Label({
+            text: ' --',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._box.add_child(this._countLabel);
+
+        this.add_child(this._box);
+
+        // Cached state (read from for UI/menu rendering)
+        this._cachedContainers = [];
+        this._cachedStatus = 'grey'; // 'green', 'yellow', 'red', 'grey'
+        this._cachedProjectName = '';
+
+        // Local state cache is read from when menu opens (preventing synchronous system calls)
+        this.menu.connect('menu-opened', () => {
+            this._buildMenu();
+        });
+
+        // Watch settings changes
+        this._settingsId = this._settings.connect('changed::project-path', () => {
+            this._onSettingsChanged();
+        });
+
+        // Initialize state
+        this._onSettingsChanged();
+
+        // Start background fallback query (timer)
+        this._pollTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 25, () => {
+            this._refreshState();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _onSettingsChanged() {
+        this._projectPath = this._settings.get_string('project-path') || '';
+        
+        // Stop current stream
+        this._stopEventStream();
+
+        if (this._projectPath) {
+            // Determine project name from path
+            this._cachedProjectName = this._projectPath.split('/').pop() || 'DockerPulse';
+            // Start event stream
+            this._startEventStream();
+        } else {
+            this._cachedProjectName = '';
+            this._cachedContainers = [];
+            this._cachedStatus = 'grey';
+            this._updateUI();
+        }
+        
+        this._refreshState();
+    }
+
+    _stopEventStream() {
+        if (this._eventProc) {
+            try {
+                this._eventProc.force_exit();
+            } catch (e) {}
+            this._eventProc = null;
+        }
+        if (this._eventCancellable) {
+            this._eventCancellable.cancel();
+            this._eventCancellable = null;
+        }
+    }
+
+    _startEventStream() {
+        this._stopEventStream();
+        
+        if (!this._projectPath) return;
+
+        try {
+            this._eventCancellable = new Gio.Cancellable();
+            let launcher = new Gio.SubprocessLauncher({
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            launcher.set_cwd(this._projectPath);
+            
+            // Stream container events
+            let argv = ['docker', 'events', '--format', '{{json .}}', '--filter', 'type=container'];
+            this._eventProc = launcher.spawnv(argv);
+
+            let stdoutPipe = this._eventProc.get_stdout_pipe();
+            let dataStream = new Gio.DataInputStream({
+                base_stream: stdoutPipe,
+            });
+
+            this._readLine(dataStream);
+        } catch (e) {
+            console.error('[DockerPulse] Error starting event stream:', e);
+            // Fallback: will rely on periodic poll
+        }
+    }
+
+    _readLine(dataStream) {
+        if (!this._eventCancellable || this._eventCancellable.is_cancelled()) return;
+
+        dataStream.read_line_async(GLib.PRIORITY_DEFAULT, this._eventCancellable, (stream, res) => {
+            try {
+                let [line, length] = stream.read_line_finish_utf8(res);
+                if (line !== null) {
+                    this._handleDockerEvent(line);
+                    this._readLine(stream);
+                } else {
+                    // Subprocess exited
+                    this._handleEventStreamClosed();
+                }
+            } catch (e) {
+                if (e.matches && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) {
+                    return;
+                }
+                console.error('[DockerPulse] Error reading from stream:', e);
+                this._handleEventStreamClosed();
+            }
+        });
+    }
+
+    _handleEventStreamClosed() {
+        this._eventProc = null;
+        // Retry starting stream after 5 seconds if still active
+        if (this._projectPath && this._eventCancellable && !this._eventCancellable.is_cancelled()) {
+            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
+                if (this._projectPath && (!this._eventProc)) {
+                    this._startEventStream();
+                }
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
+    _handleDockerEvent(line) {
+        try {
+            let event = JSON.parse(line.trim());
+            // Filter events to check if they belong to this project
+            let attributes = (event.Actor && event.Actor.Attributes) || {};
+            let project = attributes['com.docker.compose.project'];
+            let workingDir = attributes['com.docker.compose.working-dir'];
+
+            let matches = false;
+            if (project && this._cachedProjectName && project.toLowerCase() === this._cachedProjectName.toLowerCase()) {
+                matches = true;
+            } else if (workingDir && workingDir === this._projectPath) {
+                matches = true;
+            } else if (!project && !workingDir) {
+                // If we couldn't filter by project attributes, trigger refresh to be safe
+                matches = true;
+            }
+
+            if (matches) {
+                this._triggerDebouncedRefresh();
+            }
+        } catch (e) {
+            // JSON parsing or filtering error
+        }
+    }
+
+    _triggerDebouncedRefresh() {
+        if (this._debounceId) {
+            GLib.source_remove(this._debounceId);
+            this._debounceId = null;
+        }
+        this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+            this._debounceId = null;
+            this._refreshState();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    async _refreshState() {
+        if (!this._projectPath) {
+            this._cachedContainers = [];
+            this._cachedStatus = 'grey';
+            this._updateUI();
+            return;
+        }
+
+        try {
+            let launcher = new Gio.SubprocessLauncher({
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            launcher.set_cwd(this._projectPath);
+            // Run docker compose ps -a --format json
+            let argv = ['docker', 'compose', 'ps', '-a', '--format', 'json'];
+            let proc = launcher.spawnv(argv);
+
+            let result = await new Promise((resolve, reject) => {
+                proc.communicate_utf8_async(null, null, (obj, res) => {
+                    try {
+                        let [success, stdout, stderr] = obj.communicate_utf8_finish(res);
+                        resolve({ success, stdout, stderr });
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            });
+
+            if (result.success) {
+                let output = result.stdout ? result.stdout.trim() : '';
+                let containers = [];
+                if (output.startsWith('[')) {
+                    containers = JSON.parse(output);
+                } else if (output.length > 0) {
+                    containers = output.split('\n').map(line => {
+                        try {
+                            return JSON.parse(line.trim());
+                        } catch (e) {
+                            return null;
+                        }
+                    }).filter(Boolean);
+                }
+
+                this._cachedContainers = containers;
+                
+                // Determine overall status
+                let total = containers.length;
+                let running = 0;
+                let restarting = 0;
+
+                containers.forEach(item => {
+                    let state = (item.State || item.state || '').toLowerCase();
+                    if (state === 'running' || state === 'up') {
+                        running++;
+                    } else if (state === 'restarting') {
+                        restarting++;
+                    }
+                });
+
+                if (total === 0) {
+                    this._cachedStatus = 'red'; // No containers running or created (stack down)
+                } else if (running === total) {
+                    this._cachedStatus = 'green';
+                } else if (running > 0 || restarting > 0) {
+                    this._cachedStatus = 'yellow';
+                } else {
+                    this._cachedStatus = 'red';
+                }
+
+                this._updateUI();
+            } else {
+                // Command failed - e.g. daemon unreachable or docker compose config error
+                this._cachedContainers = [];
+                this._cachedStatus = 'grey';
+                this._updateUI();
+            }
+        } catch (e) {
+            // Exception - daemon unreachable
+            this._cachedContainers = [];
+            this._cachedStatus = 'grey';
+            this._updateUI();
+        }
+    }
+
+    _updateUI() {
+        let emoji = '⚪';
+        let countText = ' --';
+
+        if (this._projectPath) {
+            switch (this._cachedStatus) {
+                case 'green':
+                    emoji = '🟢';
+                    break;
+                case 'yellow':
+                    emoji = '🟡';
+                    break;
+                case 'red':
+                    emoji = '🔴';
+                    break;
+                case 'grey':
+                default:
+                    emoji = '⚪';
+                    break;
+            }
+
+            if (this._cachedStatus !== 'grey') {
+                let total = this._cachedContainers.length;
+                let running = 0;
+                this._cachedContainers.forEach(item => {
+                    let state = (item.State || item.state || '').toLowerCase();
+                    if (state === 'running' || state === 'up') {
+                        running++;
+                    }
+                });
+                countText = ` ${running}/${total}`;
+            } else {
+                countText = ' --';
+            }
+        } else {
+            emoji = '⚪';
+            countText = ' [no path]';
+        }
+
+        this._statusLabel.set_text(emoji);
+        this._countLabel.set_text(countText);
+    }
+
+    _buildMenu() {
+        this.menu.removeAll();
+
+        // 1. Header showing project path
+        let titleItem = new PopupMenu.PopupMenuItem(
+            this._cachedProjectName ? `Project: ${this._cachedProjectName}` : 'DockerPulse',
+            { reactive: false }
+        );
+        this.menu.addMenuItem(titleItem);
+
+        if (this._projectPath) {
+            let pathItem = new PopupMenu.PopupMenuItem(
+                this._projectPath,
+                { reactive: false, style_class: 'dockerpulse-path-item' }
+            );
+            pathItem.label.add_style_class_name('dockerpulse-muted');
+            this.menu.addMenuItem(pathItem);
+        }
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // 2. Container List (built from cache!)
+        if (!this._projectPath) {
+            let noPathItem = new PopupMenu.PopupMenuItem('No project path configured', { reactive: false });
+            this.menu.addMenuItem(noPathItem);
+        } else if (this._cachedStatus === 'grey') {
+            let errorItem = new PopupMenu.PopupMenuItem('Docker daemon unreachable', { reactive: false });
+            this.menu.addMenuItem(errorItem);
+        } else if (this._cachedContainers.length === 0) {
+            let emptyItem = new PopupMenu.PopupMenuItem('No containers found / Stack down', { reactive: false });
+            this.menu.addMenuItem(emptyItem);
+        } else {
+            this._cachedContainers.forEach(item => {
+                let name = item.Name || item.name || 'container';
+                let service = item.Service || item.service || name;
+                let state = (item.State || item.state || '').toLowerCase();
+                let status = item.Status || item.status || state;
+
+                let stateEmoji = '⚪';
+                if (state === 'running' || state === 'up') {
+                    stateEmoji = '🟢';
+                } else if (state === 'restarting') {
+                    stateEmoji = '🟡';
+                } else {
+                    stateEmoji = '🔴';
+                }
+
+                // Submenu for each container containing actions
+                let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
+                    `${stateEmoji} ${name} (${status})`
+                );
+
+                // Quick Actions for Container
+                let logsItem = new PopupMenu.PopupMenuItem('Stream Logs');
+                logsItem.connect('activate', () => {
+                    this._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', service]);
+                });
+                containerSubMenu.menu.addMenuItem(logsItem);
+
+                let shellItem = new PopupMenu.PopupMenuItem('Interactive Shell');
+                shellItem.connect('activate', () => {
+                    this._spawnTerminalCommand(['docker', 'compose', 'exec', service, 'sh']);
+                });
+                containerSubMenu.menu.addMenuItem(shellItem);
+
+                this.menu.addMenuItem(containerSubMenu);
+            });
+        }
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // 3. Stack Actions
+        if (this._projectPath && this._cachedStatus !== 'grey') {
+            let startItem = new PopupMenu.PopupMenuItem('Start Stack');
+            startItem.connect('activate', () => {
+                this._runStackCommand(['docker', 'compose', 'up', '-d']);
+            });
+            this.menu.addMenuItem(startItem);
+
+            let restartItem = new PopupMenu.PopupMenuItem('Restart Stack');
+            restartItem.connect('activate', () => {
+                this._runStackCommand(['docker', 'compose', 'restart']);
+            });
+            this.menu.addMenuItem(restartItem);
+
+            let stopItem = new PopupMenu.PopupMenuItem('Stop Stack');
+            stopItem.connect('activate', () => {
+                this._runStackCommand(['docker', 'compose', 'stop']);
+            });
+            this.menu.addMenuItem(stopItem);
+
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        }
+
+        // 4. Extension Settings
+        let settingsItem = new PopupMenu.PopupMenuItem('Settings');
+        settingsItem.connect('activate', () => {
+            this._extension.openPreferences();
+        });
+        this.menu.addMenuItem(settingsItem);
+    }
+
+    _runStackCommand(argv) {
+        if (!this._projectPath) return;
+        try {
+            let launcher = new Gio.SubprocessLauncher({
+                flags: Gio.SubprocessFlags.NONE,
+            });
+            launcher.set_cwd(this._projectPath);
+            launcher.spawnv(argv);
+            // Instantly trigger refresh to reflect changes
+            this._triggerDebouncedRefresh();
+        } catch (e) {
+            console.error('[DockerPulse] Error running stack command:', e);
+        }
+    }
+
+    _spawnTerminalCommand(commandArgs) {
+        if (!this._projectPath) return;
+
+        // Try gnome-terminal, fallback to kgx (Console), fallback to xterm
+        let gnomeTerminalArgs = [
+            'gnome-terminal',
+            `--working-directory=${this._projectPath}`,
+            '--',
+        ].concat(commandArgs);
+
+        let kgxArgs = [
+            'kgx',
+            '--working-directory', this._projectPath,
+            '-e', commandArgs.join(' '),
+        ];
+
+        let xtermArgs = [
+            'xterm',
+            '-wdir', this._projectPath,
+            '-e', commandArgs.join(' '),
+        ];
+
+        try {
+            let proc = Gio.Subprocess.new(gnomeTerminalArgs, Gio.SubprocessFlags.NONE);
+            proc.init(null);
+        } catch (e) {
+            try {
+                let proc = Gio.Subprocess.new(kgxArgs, Gio.SubprocessFlags.NONE);
+                proc.init(null);
+            } catch (e2) {
+                try {
+                    let proc = Gio.Subprocess.new(xtermArgs, Gio.SubprocessFlags.NONE);
+                    proc.init(null);
+                } catch (e3) {
+                    console.error('[DockerPulse] Could not spawn terminal:', e3);
+                }
+            }
+        }
+    }
+
+    destroy() {
+        this._stopEventStream();
+        if (this._settingsId) {
+            this._settings.disconnect(this._settingsId);
+            this._settingsId = null;
+        }
+        if (this._pollTimerId) {
+            GLib.source_remove(this._pollTimerId);
+            this._pollTimerId = null;
+        }
+        if (this._debounceId) {
+            GLib.source_remove(this._debounceId);
+            this._debounceId = null;
+        }
+        super.destroy();
+    }
+});
+
+export default class DockerPulseExtension extends Extension {
+    enable() {
+        this._indicator = new DockerPulseIndicator(this);
+        Main.panel.addToStatusArea(this.uuid, this._indicator);
+    }
+
+    disable() {
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
+    }
+}
