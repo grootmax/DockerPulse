@@ -261,6 +261,65 @@ class DockerPulseIndicator extends PanelMenu.Button {
         });
     }
 
+    _parseDockerComposePsOutput(outputStr) {
+        if (!outputStr) {
+            return [];
+        }
+        const trimmed = outputStr.trim();
+        if (!trimmed) {
+            return [];
+        }
+        if (trimmed.indexOf('[') === 0) {
+            try {
+                return JSON.parse(trimmed);
+            } catch (e) {
+                return [];
+            }
+        }
+        const lines = trimmed.split('\n');
+        const result = [];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line) {
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed) {
+                        result.push(parsed);
+                    }
+                } catch (err) {
+                }
+            }
+        }
+        return result;
+    }
+
+    _isContainerActive(container) {
+        if (!container) {
+            return false;
+        }
+        let rawState = '';
+        if (container.State !== undefined && container.State !== null) {
+            rawState = container.State;
+        } else if (container.state !== undefined && container.state !== null) {
+            rawState = container.state;
+        }
+        const state = String(rawState).toLowerCase();
+        if (state !== 'running' && state !== 'up') {
+            return false;
+        }
+        let rawHealth = '';
+        if (container.Health !== undefined && container.Health !== null) {
+            rawHealth = container.Health;
+        } else if (container.health !== undefined && container.health !== null) {
+            rawHealth = container.health;
+        }
+        const health = String(rawHealth).toLowerCase();
+        if (health !== '' && health !== 'healthy' && health !== 'starting') {
+            return false;
+        }
+        return true;
+    }
+
     async _refreshState() {
         if (!this._projectPath) {
             this._cachedContainers = [];
@@ -291,40 +350,25 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             if (result.success) {
                 let output = result.stdout ? result.stdout.trim() : '';
-                let containers = [];
-                if (output.startsWith('[')) {
-                    containers = JSON.parse(output);
-                } else if (output.length > 0) {
-                    containers = output.split('\n').map(line => {
-                        try {
-                            return JSON.parse(line.trim());
-                        } catch (e) {
-                            return null;
-                        }
-                    }).filter(Boolean);
-                }
+                let containers = this._parseDockerComposePsOutput(output);
 
                 this._cachedContainers = containers;
                 
                 // Determine overall status
                 let total = containers.length;
-                let running = 0;
-                let restarting = 0;
+                let active = 0;
 
                 containers.forEach(item => {
-                    let state = (item.State || item.state || '').toLowerCase();
-                    if (state === 'running' || state === 'up') {
-                        running++;
-                    } else if (state === 'restarting') {
-                        restarting++;
+                    if (this._isContainerActive(item)) {
+                        active++;
                     }
                 });
 
                 if (total === 0) {
-                    this._cachedStatus = 'red'; // No containers running or created (stack down)
-                } else if (running === total) {
+                    this._cachedStatus = 'red';
+                } else if (active === total) {
                     this._cachedStatus = 'green';
-                } else if (running > 0 || restarting > 0) {
+                } else if (active > 0) {
                     this._cachedStatus = 'yellow';
                 } else {
                     this._cachedStatus = 'red';
@@ -368,14 +412,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             if (this._cachedStatus !== 'grey') {
                 let total = this._cachedContainers.length;
-                let running = 0;
+                let active = 0;
                 this._cachedContainers.forEach(item => {
-                    let state = (item.State || item.state || '').toLowerCase();
-                    if (state === 'running' || state === 'up') {
-                        running++;
+                    if (this._isContainerActive(item)) {
+                        active++;
                     }
                 });
-                countText = ` ${running}/${total}`;
+                countText = ` ${active}/${total}`;
             } else {
                 countText = ' --';
             }
@@ -426,18 +469,38 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let state = (item.State || item.state || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
+                let health = '';
+                if (item.Health !== undefined && item.Health !== null) {
+                    health = String(item.Health).toLowerCase();
+                } else if (item.health !== undefined && item.health !== null) {
+                    health = String(item.health).toLowerCase();
+                }
+
                 let stateEmoji = '⚪';
+                let displayStatus = status;
+
                 if (state === 'running' || state === 'up') {
-                    stateEmoji = '🟢';
+                    if (health === 'starting') {
+                        stateEmoji = '🟡';
+                        displayStatus = 'starting';
+                    } else if (health === 'unhealthy') {
+                        stateEmoji = '⚠️';
+                        displayStatus = 'unhealthy';
+                    } else {
+                        stateEmoji = '🟢';
+                    }
                 } else if (state === 'restarting') {
                     stateEmoji = '🟡';
+                } else if (health === 'unhealthy' || state === 'unhealthy') {
+                    stateEmoji = '⚠️';
+                    displayStatus = 'unhealthy';
                 } else {
                     stateEmoji = '🔴';
                 }
 
                 // Submenu for each container containing actions
                 let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    `${stateEmoji} ${name} (${status})`
+                    stateEmoji + ' ' + name + ' (' + displayStatus + ')'
                 );
 
                 // Quick Actions for Container
