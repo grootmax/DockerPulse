@@ -9,6 +9,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import { ProcessRegistry } from './processRegistry.js';
+
 function getSettingString(settings, key, fallback) {
     if (!settings) return fallback;
     try {
@@ -67,6 +69,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this._cachedContainers = [];
         this._cachedStatus = 'grey'; // 'green', 'yellow', 'red', 'grey'
         this._cachedProjectName = '';
+        this._unhealthyContainers = new Set();
 
         // Local state cache is read from when menu opens (preventing synchronous system calls)
         this.menu.connect('menu-opened', () => {
@@ -261,6 +264,44 @@ class DockerPulseIndicator extends PanelMenu.Button {
         });
     }
 
+    _parseDockerComposePsOutput(outputStr) {
+        let output = outputStr ? outputStr.trim() : '';
+        let containers = [];
+        if (!output) {
+            return containers;
+        }
+        if (output.startsWith('[')) {
+            try {
+                containers = JSON.parse(output);
+            } catch (e) {
+                containers = [];
+            }
+        } else {
+            containers = output.split('\n').map(line => {
+                try {
+                    return JSON.parse(line.trim());
+                } catch (e) {
+                    return null;
+                }
+            }).filter(Boolean);
+        }
+        return containers;
+    }
+
+    _isContainerActive(item) {
+        if (!item) return false;
+        let state = (item.State || item.state || '').toLowerCase();
+        let health = (item.Health || item.health || '').toLowerCase();
+        
+        if (state === 'running' || state === 'up') {
+            if (health === 'unhealthy') {
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     async _refreshState() {
         if (!this._projectPath) {
             this._cachedContainers = [];
@@ -290,41 +331,48 @@ class DockerPulseIndicator extends PanelMenu.Button {
             });
 
             if (result.success) {
-                let output = result.stdout ? result.stdout.trim() : '';
-                let containers = [];
-                if (output.startsWith('[')) {
-                    containers = JSON.parse(output);
-                } else if (output.length > 0) {
-                    containers = output.split('\n').map(line => {
-                        try {
-                            return JSON.parse(line.trim());
-                        } catch (e) {
-                            return null;
-                        }
-                    }).filter(Boolean);
-                }
-
+                let containers = this._parseDockerComposePsOutput(result.stdout);
                 this._cachedContainers = containers;
                 
+                // Track health transition notifications
+                let currentUnhealthy = new Set();
+                containers.forEach(item => {
+                    let name = item.Name || item.name || '';
+                    let state = (item.State || item.state || '').toLowerCase();
+                    let health = (item.Health || item.health || '').toLowerCase();
+                    
+                    if ((state === 'running' || state === 'up') && health === 'unhealthy') {
+                        currentUnhealthy.add(name);
+                        if (name && !this._unhealthyContainers.has(name)) {
+                            try {
+                                if (typeof Main !== 'undefined' && Main.notify) {
+                                    Main.notify("DockerPulse Warning", `Container ${name} is unhealthy!`);
+                                } else {
+                                    const uiMain = imports.ui.main;
+                                    uiMain.notify("DockerPulse Warning", `Container ${name} is unhealthy!`);
+                                }
+                            } catch (err) {
+                                console.error(`[DockerPulse] Failed to send notification for ${name}:`, err);
+                            }
+                        }
+                    }
+                });
+                this._unhealthyContainers = currentUnhealthy;
+
                 // Determine overall status
                 let total = containers.length;
-                let running = 0;
-                let restarting = 0;
-
+                let active = 0;
                 containers.forEach(item => {
-                    let state = (item.State || item.state || '').toLowerCase();
-                    if (state === 'running' || state === 'up') {
-                        running++;
-                    } else if (state === 'restarting') {
-                        restarting++;
+                    if (this._isContainerActive(item)) {
+                        active++;
                     }
                 });
 
                 if (total === 0) {
                     this._cachedStatus = 'red'; // No containers running or created (stack down)
-                } else if (running === total) {
+                } else if (active === total) {
                     this._cachedStatus = 'green';
-                } else if (running > 0 || restarting > 0) {
+                } else if (active > 0) {
                     this._cachedStatus = 'yellow';
                 } else {
                     this._cachedStatus = 'red';
@@ -370,8 +418,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let total = this._cachedContainers.length;
                 let running = 0;
                 this._cachedContainers.forEach(item => {
-                    let state = (item.State || item.state || '').toLowerCase();
-                    if (state === 'running' || state === 'up') {
+                    if (this._isContainerActive(item)) {
                         running++;
                     }
                 });
@@ -424,20 +471,35 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
+                let health = (item.Health || item.health || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
                 let stateEmoji = '⚪';
+                let healthLabel = '';
                 if (state === 'running' || state === 'up') {
-                    stateEmoji = '🟢';
+                    if (health === 'healthy') {
+                        stateEmoji = '🟢';
+                        healthLabel = ' [healthy]';
+                    } else if (health === 'unhealthy') {
+                        stateEmoji = '⚠️';
+                        healthLabel = ' [unhealthy]';
+                    } else if (health === 'starting') {
+                        stateEmoji = '🟡';
+                        healthLabel = ' [starting]';
+                    } else {
+                        stateEmoji = '🟢';
+                    }
                 } else if (state === 'restarting') {
                     stateEmoji = '🟡';
+                    healthLabel = ' [restarting]';
                 } else {
                     stateEmoji = '🔴';
+                    healthLabel = ' [inactive]';
                 }
 
                 // Submenu for each container containing actions
                 let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    `${stateEmoji} ${name} (${status})`
+                    `${stateEmoji} ${name}${healthLabel} (${status})`
                 );
 
                 // Quick Actions for Container
@@ -565,11 +627,29 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
 export default class DockerPulseExtension extends Extension {
     enable() {
+        console.log('[DockerPulse] Enabling extension...');
+        this._registry = new ProcessRegistry();
+
+        try {
+            console.log('[DockerPulse] Spawning Docker events listener...');
+            this._registry.spawn(['docker', 'events', '--format', '{{json .}}']);
+            console.log('[DockerPulse] Docker events listener spawned and registered.');
+        } catch (e) {
+            console.error(`[DockerPulse] Failed to spawn Docker events listener: ${e.message}`);
+        }
+
         this._indicator = new DockerPulseIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 
     disable() {
+        console.log('[DockerPulse] Disabling extension...');
+        if (this._registry) {
+            const count = this._registry.activeCount;
+            this._registry.cleanup();
+            this._registry = null;
+            console.log(`[DockerPulse] Cleaned up registry. Terminated ${count} background processes.`);
+        }
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;

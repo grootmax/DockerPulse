@@ -36,6 +36,95 @@ jest.unstable_mockModule('gi://Gio', () => {
     };
 }, { virtual: true });
 
+jest.unstable_mockModule('gi://GObject', () => {
+    return {
+        default: {
+            registerClass: (cls) => cls,
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('gi://GLib', () => {
+    return {
+        default: {
+            get_pid: () => 1234,
+            source_remove: () => {},
+            timeout_add_seconds: () => 1,
+            timeout_add: () => 1,
+            PRIORITY_DEFAULT: 0,
+            SOURCE_CONTINUE: true,
+            SOURCE_REMOVE: false,
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('gi://Clutter', () => {
+    return {
+        default: {
+            ActorAlign: {
+                CENTER: 1,
+            }
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('gi://St', () => {
+    return {
+        default: {
+            BoxLayout: class {
+                add_child() {}
+            },
+            Label: class {
+                set_text() {}
+            }
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
+    return {
+        panel: {
+            addToStatusArea: () => {},
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
+    return {
+        Button: class {
+            constructor() {
+                this.menu = {
+                    connect: () => {},
+                    removeAll: () => {},
+                    addMenuItem: () => {},
+                };
+            }
+            add_child() {}
+            destroy() {}
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/popupMenu.js', () => {
+    return {
+        PopupMenuItem: class {
+            constructor() {
+                this.label = {
+                    add_style_class_name: () => {},
+                };
+            }
+        },
+        PopupSeparatorMenuItem: class {},
+        PopupSubMenuMenuItem: class {
+            constructor() {
+                this.menu = {
+                    addMenuItem: () => {},
+                };
+            }
+        },
+    };
+}, { virtual: true });
+
 // Virtual mock for extension base class
 jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', () => {
     return {
@@ -43,7 +132,8 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
             constructor() {}
             enable() {}
             disable() {}
-        }
+        },
+        gettext: (str) => str
     };
 }, { virtual: true });
 

@@ -114,8 +114,20 @@ assert(decideColor([
 
 if (testPassed) {
     console.log('🎉 All logic tests passed successfully!');
-    process.exit(0);
+    if (!process.env.JEST_WORKER_ID) {
+        process.exit(0);
+    }
 } else {
     console.error('❌ Some tests failed.');
-    process.exit(1);
+    if (!process.env.JEST_WORKER_ID) {
+        process.exit(1);
+    } else {
+        throw new Error('Some tests failed.');
+    }
+}
+
+if (typeof test === 'function') {
+    test('DockerPulse logic tests compatibility', () => {
+        expect(testPassed).toBe(true);
+    });
 }
