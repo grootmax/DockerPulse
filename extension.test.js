@@ -159,7 +159,10 @@ jest.unstable_mockModule('gi://Gio', () => {
 jest.unstable_mockModule('gi://GLib', () => {
     return {
         Extension: class {
-            constructor() {}
+            constructor() {
+                this.uuid = 'dockerpulse@github.com';
+                this.path = '/app';
+            }
             enable() {}
             disable() {}
         },

@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --experimental-vm-modules $(which jest)"
+    "test": "node --experimental-vm-modules $(which jest) --testMatch '**/*.test.js' && node test.js"
   },
   "repository": {
     "type": "git",

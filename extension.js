@@ -31,6 +31,16 @@ function getSettingInt(settings, key, fallback) {
     }
 }
 
+function getSettingBool(settings, key, fallback) {
+    if (!settings) return fallback;
+    try {
+        return settings.get_boolean(key);
+    } catch (e) {
+        console.error(`[DockerPulse] Failed to get boolean for key "${key}":`, e);
+        return fallback;
+    }
+}
+
 const DockerPulseIndicator = GObject.registerClass(
 class DockerPulseIndicator extends PanelMenu.Button {
     _init(extension) {
@@ -88,6 +98,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
     _onSettingsChanged() {
         this._projectPath = getSettingString(this._settings, 'project-path', '');
+        this._showContainerCount = getSettingBool(this._settings, 'show-container-count', true);
         
         // Stop current stream
         this._stopEventStream();
@@ -451,6 +462,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
         this._statusLabel.set_text(emoji);
         this._countLabel.set_text(countText);
+        this._countLabel.visible = this._showContainerCount;
     }
 
     _buildMenu() {
