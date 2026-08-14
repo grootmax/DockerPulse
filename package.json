@@ -1,10 +1,21 @@
 {
-  "name": "dockerpulse",
+  "name": "app",
   "version": "1.0.0",
-  "description": "Live Docker Compose status in your GNOME top bar",
-  "main": "extension.js",
+  "description": "",
+  "main": "index.js",
   "scripts": {
     "test": "node --experimental-vm-modules $(which jest)"
   },
-  "type": "module"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grootmax/DockerPulse.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/grootmax/DockerPulse/issues"
+  },
+  "homepage": "https://github.com/grootmax/DockerPulse#readme"
 }
