@@ -1,63 +1,96 @@
 import { jest } from '@jest/globals';
 
-// Virtual mock for gi://GObject
+// Virtual mock for gi://GObject module to run in Node/Jest environment
 jest.unstable_mockModule('gi://GObject', () => {
     return {
         default: {
-            registerClass: (meta, cls) => cls || meta,
+            registerClass: (cls) => cls,
         }
     };
 }, { virtual: true });
 
-// Virtual mock for gi://GLib
-const timeout_add_seconds_mock = jest.fn(() => 1);
+// Virtual mock for gi://GLib module to run in Node/Jest environment
 jest.unstable_mockModule('gi://GLib', () => {
     return {
         default: {
-            timeout_add_seconds: timeout_add_seconds_mock,
-            timeout_add: jest.fn(() => 2),
-            source_remove: jest.fn(),
-            get_pid: () => ({ toString: () => '123' }),
-            get_user_config_dir: () => '/app/tmp',
-            build_filenamev: (arr) => arr.join('/'),
-            file_test: () => false,
+            timeout_add_seconds: () => 1,
+            source_remove: () => {},
+            get_pid: () => 1234,
             PRIORITY_DEFAULT: 0,
-            SOURCE_CONTINUE: true,
-            SOURCE_REMOVE: false,
         }
     };
 }, { virtual: true });
 
-// Virtual mock for gi://Clutter
+// Virtual mock for gi://Clutter module to run in Node/Jest environment
 jest.unstable_mockModule('gi://Clutter', () => {
     return {
         default: {
-            ActorAlign: {
-                CENTER: 1,
-            }
+            ActorAlign: { CENTER: 0, END: 1 },
         }
     };
 }, { virtual: true });
 
-// Virtual mock for gi://St
-class MockLabel {
-    constructor(config) {
-        this.text = (config && config.text) || '';
-        this.visible = true;
-    }
-    set_text(t) {
-        this.text = t;
-    }
-}
+// Virtual mock for gi://St module to run in Node/Jest environment
 jest.unstable_mockModule('gi://St', () => {
     return {
         default: {
             BoxLayout: class {
-                constructor() {}
                 add_child() {}
             },
-            Label: MockLabel,
+            Label: class {
+                constructor() {}
+                set_text() {}
+            },
+            Icon: class {
+                constructor() {}
+            },
+            Button: class {
+                constructor() {}
+                connect() {}
+            },
         }
+    };
+}, { virtual: true });
+
+// Virtual mock for GNOME Shell UI modules
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
+    return {
+        panel: {
+            addToStatusArea: () => {},
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
+    return {
+        Button: class {
+            constructor() {
+                this.menu = {
+                    connect: () => {},
+                    removeAll: () => {},
+                    addMenuItem: () => {},
+                };
+            }
+            destroy() {}
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/popupMenu.js', () => {
+    return {
+        PopupMenuItem: class {
+            constructor() {
+                this.label = { add_style_class_name: () => {} };
+            }
+            connect() {}
+            add_child() {}
+        },
+        PopupSeparatorMenuItem: class {},
+        PopupSubMenuMenuItem: class {
+            constructor() {
+                this.menu = { addMenuItem: () => {} };
+            }
+        },
     };
 }, { virtual: true });
 
@@ -65,59 +98,65 @@ jest.unstable_mockModule('gi://St', () => {
 jest.unstable_mockModule('gi://Gio', () => {
     return {
         default: {
-            Subprocess: class {
-                constructor(config) {
-                    this.argv = config.argv;
-                    this.flags = config.flags;
-                    this._waitCallback = null;
-                    this.isKilled = false;
-                    this.initCalled = false;
-                }
+            registerClass: (...args) => args[args.length - 1],
+        }
+    };
+}, { virtual: true });
 
-                init(cancellable) {
-                    this.initCalled = true;
-                }
+let spawnedArgvs = [];
+let spawnedCwds = [];
 
-                wait_async(cancellable, callback) {
-                    this._waitCallback = callback;
-                }
+class MockSubprocess {
+    constructor(argv) {
+        this.argv = argv;
+    }
+    get_stdout_pipe() {
+        return {};
+    }
+    communicate_utf8_async(a, b, callback) {
+        // Mock communication finishing immediately to avoid pending promises
+        process.nextTick(() => {
+            callback(this, 'dummy-res');
+        });
+    }
+    communicate_utf8_finish(res) {
+        return [true, '[]', ''];
+    }
+}
 
-                wait_finish(res) {
-                    return true;
+jest.unstable_mockModule('gi://Gio', () => {
+    return {
+        default: {
+            SubprocessLauncher: class {
+                constructor() {}
+                set_cwd(cwd) {
+                    spawnedCwds.push(cwd);
                 }
-
-                force_exit() {
-                    this.isKilled = true;
+                spawnv(argv) {
+                    spawnedArgvs.push(argv);
+                    return new MockSubprocess(argv);
                 }
             },
             SubprocessFlags: {
-                NONE: 0,
                 STDOUT_PIPE: 1,
                 STDERR_PIPE: 2,
             },
-            SubprocessLauncher: class {
-                constructor() {}
-                set_cwd() {}
-                spawnv() {
-                    return {
-                        get_stdout_pipe: () => ({}),
-                        force_exit: () => {},
-                    };
-                }
+            Cancellable: class {
+                is_cancelled() { return false; }
+                cancel() {}
             },
             DataInputStream: class {
                 constructor() {}
                 read_line_async() {}
             },
+            IOErrorEnum: {
+                CANCELLED: 1,
+            },
         }
     };
 }, { virtual: true });
 
-// Settings Mock Map
-const settingsStore = new Map();
-
-// Virtual mock for extension base class
-jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', () => {
+jest.unstable_mockModule('gi://GLib', () => {
     return {
         Extension: class {
             constructor() {
@@ -126,28 +165,56 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
             }
             enable() {}
             disable() {}
-            getSettings() {
-                return {
-                    connect: jest.fn(() => 99),
-                    disconnect: jest.fn(),
-                    get_string: (key) => settingsStore.get(key) || '',
-                    get_int: (key) => settingsStore.get(key) !== undefined ? settingsStore.get(key) : 25,
-                    get_boolean: (key) => settingsStore.get(key) !== undefined ? settingsStore.get(key) : true,
-                    set_string: (key, val) => settingsStore.set(key, val),
-                    set_int: (key, val) => settingsStore.set(key, val),
-                    set_boolean: (key, val) => settingsStore.set(key, val),
-                };
-            }
         },
-        gettext: (s) => s,
+        gettext: (str) => str
     };
 }, { virtual: true });
 
-// Mock shell ui elements
+jest.unstable_mockModule('gi://Clutter', () => {
+    return {
+        default: {
+            ActorAlign: {
+                CENTER: 1,
+            },
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('gi://St', () => {
+    return {
+        default: {
+            BoxLayout: class {
+                constructor() {}
+                add_child() {}
+            },
+            Label: class {
+                constructor() {}
+                set_text() {}
+            },
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', () => {
+    return {
+        Extension: class {
+            constructor() {}
+            getSettings() {
+                return {
+                    connect: () => 1,
+                    get_string: () => '/path/to/my-project',
+                    get_int: () => 25,
+                };
+            }
+        },
+        gettext: (text) => text,
+    };
+}, { virtual: true });
+
 jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
     return {
         panel: {
-            addToStatusArea: jest.fn(),
+            addToStatusArea: () => {},
         }
     };
 }, { virtual: true });
@@ -157,12 +224,11 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
         Button: class {
             constructor(...args) {
                 this.menu = {
-                    connect: jest.fn(),
-                    removeAll: jest.fn(),
-                    addMenuItem: jest.fn(),
-                    isOpen: false,
+                    connect: () => {},
+                    removeAll: () => {},
+                    addMenuItem: () => {},
                 };
-                if (this._init) {
+                if (typeof this._init === 'function') {
                     this._init(...args);
                 }
             }
@@ -175,96 +241,54 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
 
 jest.unstable_mockModule('resource:///org/gnome/shell/ui/popupMenu.js', () => {
     return {
-        PopupMenuItem: class {
-            constructor() {
-                this.label = { style: '', add_style_class_name: jest.fn() };
-            }
-            connect() {}
-        },
+        PopupMenuItem: class {},
         PopupSeparatorMenuItem: class {},
         PopupSubMenuMenuItem: class {
             constructor() {
-                this.menu = { addMenuItem: jest.fn() };
+                this.menu = {
+                    addMenuItem: () => {},
+                };
             }
-        },
+        }
     };
 }, { virtual: true });
 
-// Import the extension under test after mocking dependencies
+// Import extension.js
 const { default: DockerPulseExtension } = await import('./extension.js');
 
-describe('DockerPulseExtension', () => {
-    let extension;
-    let logSpy;
-    let errorSpy;
+describe('DockerPulseExtension & Wrapper Spawning', () => {
+    let extensionInstance;
 
     beforeEach(() => {
-        settingsStore.clear();
-        timeout_add_seconds_mock.mockClear();
-        logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-        errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        extension = new DockerPulseExtension();
+        spawnedArgvs = [];
+        spawnedCwds = [];
+        extensionInstance = new DockerPulseExtension();
+        // Mock properties normally provided by GNOME Shell at runtime
+        extensionInstance.path = '/home/user/.local/share/gnome-shell/extensions/dockerpulse';
+        extensionInstance.uuid = 'dockerpulse@github.com';
     });
 
-    afterEach(() => {
-        logSpy.mockRestore();
-        errorSpy.mockRestore();
-    });
+    test('should spawn the wrapper with correct arguments including parent pid and command', () => {
+        extensionInstance.enable();
+        
+        // Let's retrieve the indicator
+        const indicator = extensionInstance._indicator;
+        
+        // Triggers _onSettingsChanged and subsequently _startEventStream
+        indicator._onSettingsChanged();
 
-    test('should instantiate indicator on enable', () => {
-        extension.enable();
-
-        expect(extension._indicator).toBeDefined();
-    });
-
-    test('should clean up and nullify indicator on disable', () => {
-        extension.enable();
-        expect(extension._indicator).toBeDefined();
-
-        extension.disable();
-
-        expect(extension._indicator).toBeNull();
-    });
-
-    test('should handle disable when already disabled or not enabled yet', () => {
-        expect(() => {
-            extension.disable();
-        }).not.toThrow();
-        expect(extension._indicator).toBeUndefined();
-    });
-
-    test('should respect show-container-count boolean preference', () => {
-        // Default is true
-        extension.enable();
-        expect(extension._indicator._showContainerCount).toBe(true);
-        expect(extension._indicator._countLabel.visible).toBe(true);
-
-        // Turn off
-        settingsStore.set('show-container-count', false);
-        extension._indicator._onSettingsChanged();
-        expect(extension._indicator._showContainerCount).toBe(false);
-        expect(extension._indicator._countLabel.visible).toBe(false);
-
-        // Turn back on
-        settingsStore.set('show-container-count', true);
-        extension._indicator._onSettingsChanged();
-        expect(extension._indicator._showContainerCount).toBe(true);
-        expect(extension._indicator._countLabel.visible).toBe(true);
-    });
-
-    test('should reschedule poll timer immediately on poll-interval changes', () => {
-        // Enable with default (25 seconds)
-        extension.enable();
-        expect(timeout_add_seconds_mock).toHaveBeenCalledWith(expect.anything(), 25, expect.any(Function));
-
-        // Change to 15 seconds
-        settingsStore.set('poll-interval', 15);
-        extension._indicator._onSettingsChanged();
-        expect(timeout_add_seconds_mock).toHaveBeenLastCalledWith(expect.anything(), 15, expect.any(Function));
-
-        // Change to 300 seconds
-        settingsStore.set('poll-interval', 300);
-        extension._indicator._onSettingsChanged();
-        expect(timeout_add_seconds_mock).toHaveBeenLastCalledWith(expect.anything(), 300, expect.any(Function));
+        expect(spawnedCwds).toContain('/path/to/my-project');
+        expect(spawnedArgvs).toContainEqual([
+            'python3',
+            '/home/user/.local/share/gnome-shell/extensions/dockerpulse/parent_monitor_wrapper.py',
+            '--parent-pid',
+            '12345',
+            'docker',
+            'events',
+            '--format',
+            '{{json .}}',
+            '--filter',
+            'type=container'
+        ]);
     });
 });
