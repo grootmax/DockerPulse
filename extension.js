@@ -434,13 +434,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             if (this._cachedStatus !== 'grey') {
                 let total = this._cachedContainers.length;
-                let running = 0;
+                let active = 0;
                 this._cachedContainers.forEach(item => {
                     if (this._isContainerActive(item)) {
                         running++;
                     }
                 });
-                countText = ` ${running}/${total}`;
+                countText = ` ${active}/${total}`;
             } else {
                 countText = ' --';
             }
@@ -510,18 +510,38 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let state = (item.State || item.state || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
+                let health = '';
+                if (item.Health !== undefined && item.Health !== null) {
+                    health = String(item.Health).toLowerCase();
+                } else if (item.health !== undefined && item.health !== null) {
+                    health = String(item.health).toLowerCase();
+                }
+
                 let stateEmoji = '⚪';
+                let displayStatus = status;
+
                 if (state === 'running' || state === 'up') {
-                    stateEmoji = '🟢';
+                    if (health === 'starting') {
+                        stateEmoji = '🟡';
+                        displayStatus = 'starting';
+                    } else if (health === 'unhealthy') {
+                        stateEmoji = '⚠️';
+                        displayStatus = 'unhealthy';
+                    } else {
+                        stateEmoji = '🟢';
+                    }
                 } else if (state === 'restarting') {
                     stateEmoji = '🟡';
+                } else if (health === 'unhealthy' || state === 'unhealthy') {
+                    stateEmoji = '⚠️';
+                    displayStatus = 'unhealthy';
                 } else {
                     stateEmoji = '🔴';
                 }
 
                 // Submenu for each container containing actions
                 let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    `${stateEmoji} ${name} (${status})`
+                    stateEmoji + ' ' + name + ' (' + displayStatus + ')'
                 );
 
                 // Quick Actions for Container
