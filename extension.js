@@ -4,6 +4,8 @@ import GLib from 'gi://GLib';
 import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 
+import { ProcessRegistry } from './processRegistry.js';
+
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -27,6 +29,16 @@ function getSettingInt(settings, key, fallback) {
         return settings.get_int(key);
     } catch (e) {
         console.error(`[DockerPulse] Failed to get int for key "${key}":`, e);
+        return fallback;
+    }
+}
+
+function getSettingBool(settings, key, fallback) {
+    if (!settings) return fallback;
+    try {
+        return settings.get_boolean(key);
+    } catch (e) {
+        console.error(`[DockerPulse] Failed to get boolean for key "${key}":`, e);
         return fallback;
     }
 }
@@ -69,6 +81,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this._cachedContainers = [];
         this._cachedStatus = 'grey'; // 'green', 'yellow', 'red', 'grey'
         this._cachedProjectName = '';
+        this._unhealthyContainers = new Set();
 
         // Local state cache is read from when menu opens (preventing synchronous system calls)
         this.menu.connect('menu-opened', () => {
@@ -88,6 +101,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
     _onSettingsChanged() {
         this._projectPath = getSettingString(this._settings, 'project-path', '');
+        this._showContainerCount = getSettingBool(this._settings, 'show-container-count', true);
         
         // Stop current stream
         this._stopEventStream();
@@ -115,22 +129,37 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this._refreshState();
     }
 
-    _updatePollTimer() {
+    _updatePollTimer(customInterval) {
         // Remove existing timer
         if (this._pollTimerId) {
             GLib.source_remove(this._pollTimerId);
             this._pollTimerId = null;
         }
 
-        let interval = getSettingInt(this._settings, 'poll-interval', 25);
+        let interval = customInterval || getSettingInt(this._settings, 'poll-interval', 25);
         if (interval < 1) {
             interval = 25; // Safe guard
         }
+        this._currentPollInterval = interval;
 
-        this._pollTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, interval, () => {
+        this._pollTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._currentPollInterval, () => {
             this._refreshState();
             return GLib.SOURCE_CONTINUE;
         });
+    }
+
+    _backoffPollInterval() {
+        let baseInterval = getSettingInt(this._settings, 'poll-interval', 25);
+        if (baseInterval < 1) baseInterval = 25;
+        
+        if (!this._currentPollInterval) {
+            this._currentPollInterval = baseInterval;
+        }
+        // Multiply by 1.5 for backoff, up to a maximum of 300 seconds
+        let newInterval = Math.min(300, Math.round(this._currentPollInterval * 1.5));
+        if (newInterval > this._currentPollInterval) {
+            this._updatePollTimer(newInterval);
+        }
     }
 
     _stopEventStream() {
@@ -143,6 +172,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
         if (this._eventCancellable) {
             this._eventCancellable.cancel();
             this._eventCancellable = null;
+        }
+        if (this._reconnectTimerId) {
+            GLib.source_remove(this._reconnectTimerId);
+            this._reconnectTimerId = null;
         }
     }
 
@@ -176,6 +209,9 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 'type=container'
             ];
             this._eventProc = launcher.spawnv(argv);
+            if (this._extension && this._extension._registry) {
+                this._extension._registry.register(this._eventProc);
+            }
 
             let stdoutPipe = this._eventProc.get_stdout_pipe();
             let dataStream = new Gio.DataInputStream({
@@ -214,9 +250,23 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
     _handleEventStreamClosed() {
         this._eventProc = null;
-        // Retry starting stream after 5 seconds if still active
+        
+        // Back off reconnect delay
+        if (!this._reconnectDelay) {
+            this._reconnectDelay = 5;
+        } else {
+            this._reconnectDelay = Math.min(60, this._reconnectDelay * 2);
+        }
+
+        if (this._reconnectTimerId) {
+            GLib.source_remove(this._reconnectTimerId);
+            this._reconnectTimerId = null;
+        }
+
+        // Retry starting stream after reconnectDelay seconds if still active
         if (this._projectPath && this._eventCancellable && !this._eventCancellable.is_cancelled()) {
-            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
+            this._reconnectTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._reconnectDelay, () => {
+                this._reconnectTimerId = null;
                 if (this._projectPath && (!this._eventProc)) {
                     this._startEventStream();
                 }
@@ -231,7 +281,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
             // Filter events to check if they belong to this project
             let attributes = (event.Actor && event.Actor.Attributes) || {};
             let project = attributes['com.docker.compose.project'];
-            let workingDir = attributes['com.docker.compose.working-dir'];
+            let workingDir = attributes['com.docker.compose.project.working_dir'] ||
+                             attributes['com.docker.compose.working_dir'] ||
+                             attributes['com.docker.compose.working-dir'] ||
+                             attributes['com.docker.compose.project.working-dir'];
 
             let matches = false;
             if (project && this._cachedProjectName && project.toLowerCase() === this._cachedProjectName.toLowerCase()) {
@@ -264,18 +317,14 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _parseDockerComposePsOutput(outputStr) {
-        if (!outputStr) {
-            return [];
-        }
-        let trimmed = outputStr.trim();
-        if (trimmed.startsWith('[')) {
+        let output = outputStr ? outputStr.trim() : '';
+        let containers = [];
+        if (output.startsWith('[')) {
             try {
-                return JSON.parse(trimmed);
-            } catch (e) {
-                return [];
-            }
-        } else if (trimmed.length > 0) {
-            return trimmed.split('\n').map(function(line) {
+                containers = JSON.parse(output);
+            } catch (e) {}
+        } else if (output.length > 0) {
+            containers = output.split('\n').map(line => {
                 try {
                     return JSON.parse(line.trim());
                 } catch (e) {
@@ -283,18 +332,17 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 }
             }).filter(Boolean);
         }
-        return [];
+        return containers;
     }
 
     _isContainerActive(item) {
-        if (!item) {
-            return false;
-        }
         let state = (item.State || item.state || '').toLowerCase();
         let health = (item.Health || item.health || '').toLowerCase();
-        let isRunning = (state === 'running' || state === 'up');
-        let isHealthy = (health === 'healthy' || health === 'starting' || health === '');
-        return isRunning && isHealthy;
+        let active = state === 'running' || state === 'up';
+        if (active) {
+            return health !== 'unhealthy';
+        }
+        return false;
     }
 
     async _refreshState() {
@@ -313,6 +361,9 @@ class DockerPulseIndicator extends PanelMenu.Button {
             // Run docker compose ps -a --format json
             let argv = ['docker', 'compose', 'ps', '-a', '--format', 'json'];
             let proc = launcher.spawnv(argv);
+            if (this._extension && this._extension._registry) {
+                this._extension._registry.register(proc);
+            }
 
             let result = await new Promise((resolve, reject) => {
                 proc.communicate_utf8_async(null, null, (obj, res) => {
@@ -328,8 +379,34 @@ class DockerPulseIndicator extends PanelMenu.Button {
             if (result.success) {
                 let output = result.stdout ? result.stdout.trim() : '';
                 let containers = this._parseDockerComposePsOutput(output);
+
                 this._cachedContainers = containers;
                 
+                // Track health transition notifications
+                let currentUnhealthy = new Set();
+                containers.forEach(item => {
+                    let name = item.Name || item.name || '';
+                    let state = (item.State || item.state || '').toLowerCase();
+                    let health = (item.Health || item.health || '').toLowerCase();
+                    
+                    if ((state === 'running' || state === 'up') && health === 'unhealthy') {
+                        currentUnhealthy.add(name);
+                        if (name && !this._unhealthyContainers.has(name)) {
+                            try {
+                                if (typeof Main !== 'undefined' && Main.notify) {
+                                    Main.notify("DockerPulse Warning", `Container ${name} is unhealthy!`);
+                                } else {
+                                    const uiMain = imports.ui.main;
+                                    uiMain.notify("DockerPulse Warning", `Container ${name} is unhealthy!`);
+                                }
+                            } catch (err) {
+                                console.error(`[DockerPulse] Failed to send notification for ${name}:`, err);
+                            }
+                        }
+                    }
+                });
+                this._unhealthyContainers = currentUnhealthy;
+
                 // Determine overall status
                 let total = containers.length;
                 let active = 0;
@@ -350,17 +427,25 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     this._cachedStatus = 'red';
                 }
 
+                // Reset poll interval backoff since we succeeded
+                let baseInterval = getSettingInt(this._settings, 'poll-interval', 25);
+                if (this._currentPollInterval !== baseInterval) {
+                    this._updatePollTimer(baseInterval);
+                }
+
                 this._updateUI();
             } else {
                 // Command failed - e.g. daemon unreachable or docker compose config error
                 this._cachedContainers = [];
                 this._cachedStatus = 'grey';
+                this._backoffPollInterval();
                 this._updateUI();
             }
         } catch (e) {
             // Exception - daemon unreachable
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._backoffPollInterval();
             this._updateUI();
         }
     }
@@ -391,7 +476,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let active = 0;
                 this._cachedContainers.forEach(item => {
                     if (this._isContainerActive(item)) {
-                        active++;
+                        running++;
                     }
                 });
                 countText = ` ${active}/${total}`;
@@ -405,6 +490,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
         this._statusLabel.set_text(emoji);
         this._countLabel.set_text(countText);
+        this._countLabel.visible = this._showContainerCount;
     }
 
     _buildMenu() {
@@ -413,8 +499,27 @@ class DockerPulseIndicator extends PanelMenu.Button {
         // 1. Header showing project path
         let titleItem = new PopupMenu.PopupMenuItem(
             this._cachedProjectName ? `Project: ${this._cachedProjectName}` : 'DockerPulse',
-            { reactive: false }
+            { reactive: true }
         );
+        titleItem.activate = () => {};
+
+        let refreshIcon = new St.Icon({
+            icon_name: 'view-refresh-symbolic',
+            style_class: 'system-status-icon',
+        });
+        let refreshButton = new St.Button({
+            child: refreshIcon,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+            style_class: 'dockerpulse-refresh-button',
+            x_align: Clutter.ActorAlign.END,
+            x_expand: true,
+        });
+        refreshButton.connect('clicked', () => {
+            this._refreshState();
+        });
+        titleItem.add_child(refreshButton);
         this.menu.addMenuItem(titleItem);
 
         if (this._projectPath) {
@@ -443,20 +548,42 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
+                let health = (item.Health || item.health || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
+                let health = '';
+                if (item.Health !== undefined && item.Health !== null) {
+                    health = String(item.Health).toLowerCase();
+                } else if (item.health !== undefined && item.health !== null) {
+                    health = String(item.health).toLowerCase();
+                }
+
                 let stateEmoji = '⚪';
+                let displayStatus = status;
+
                 if (state === 'running' || state === 'up') {
-                    stateEmoji = '🟢';
+                    if (health === 'starting') {
+                        stateEmoji = '🟡';
+                        displayStatus = 'starting';
+                    } else if (health === 'unhealthy') {
+                        stateEmoji = '⚠️';
+                        displayStatus = 'unhealthy';
+                    } else {
+                        stateEmoji = '🟢';
+                    }
                 } else if (state === 'restarting') {
                     stateEmoji = '🟡';
+                } else if (health === 'unhealthy' || state === 'unhealthy') {
+                    stateEmoji = '⚠️';
+                    displayStatus = 'unhealthy';
                 } else {
                     stateEmoji = '🔴';
+                    healthLabel = ' [inactive]';
                 }
 
                 // Submenu for each container containing actions
                 let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    `${stateEmoji} ${name} (${status})`
+                    stateEmoji + ' ' + name + ' (' + displayStatus + ')'
                 );
 
                 // Quick Actions for Container
@@ -509,16 +636,29 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(settingsItem);
     }
 
-    _runStackCommand(argv) {
+    async _runStackCommand(argv) {
         if (!this._projectPath) return;
         try {
             let launcher = new Gio.SubprocessLauncher({
                 flags: Gio.SubprocessFlags.NONE,
             });
             launcher.set_cwd(this._projectPath);
-            launcher.spawnv(argv);
-            // Instantly trigger refresh to reflect changes
-            this._triggerDebouncedRefresh();
+            let proc = launcher.spawnv(argv);
+            
+            // Wait for the stack action process to complete asynchronously (non-blocking)
+            await new Promise((resolve) => {
+                proc.wait_async(null, (source, res) => {
+                    try {
+                        source.wait_finish(res);
+                    } catch (e) {
+                        console.error('[DockerPulse] Error waiting for stack command:', e);
+                    }
+                    resolve();
+                });
+            });
+
+            // Trigger state refresh after the stack action has fully completed
+            this._refreshState();
         } catch (e) {
             console.error('[DockerPulse] Error running stack command:', e);
         }
@@ -585,23 +725,35 @@ class DockerPulseIndicator extends PanelMenu.Button {
 export default class DockerPulseExtension extends Extension {
     enable() {
         this._registry = new ProcessRegistry();
-        this._registry.spawn(['docker', 'events', '--format', '{{json .}}']);
-        console.log('Docker events listener spawned and registered.');
+        try {
+            this._registry.spawn(['docker', 'events', '--format', '{{json .}}']);
+            console.log('Docker events listener spawned and registered.');
+        } catch (e) {
+            console.error('[DockerPulse] Failed to spawn docker events:', e);
+        }
 
         this._indicator = new DockerPulseIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 
     disable() {
+        console.log('[DockerPulse] Disabling extension...');
+        if (this._registry) {
+            const count = this._registry.activeCount;
+            this._registry.cleanup();
+            this._registry = null;
+            console.log(`[DockerPulse] Cleaned up registry. Terminated ${count} background processes.`);
+        }
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
         }
+
         if (this._registry) {
-            let activeCount = this._registry.activeCount;
+            let count = this._registry.activeCount;
             this._registry.cleanup();
             this._registry = null;
-            console.log(`Cleaned up registry. Terminated ${activeCount} background processes.`);
+            console.log(`Cleaned up registry. Terminated ${count} background processes.`);
         }
     }
 }

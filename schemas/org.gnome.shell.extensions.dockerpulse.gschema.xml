@@ -16,5 +16,10 @@
       <summary>Polling Interval</summary>
       <description>Polling interval in seconds to refresh container status.</description>
     </key>
+    <key name="show-container-count" type="b">
+      <default>true</default>
+      <summary>Show Container Count</summary>
+      <description>Toggle visibility of the container count in the top status bar.</description>
+    </key>
   </schema>
 </schemalist>
