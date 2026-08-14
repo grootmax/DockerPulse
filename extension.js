@@ -156,8 +156,23 @@ class DockerPulseIndicator extends PanelMenu.Button {
             });
             launcher.set_cwd(this._projectPath);
             
-            // Stream container events
-            let argv = ['docker', 'events', '--format', '{{json .}}', '--filter', 'type=container'];
+            // Get current parent PID and path to wrapper
+            let parentPid = GLib.get_pid().toString();
+            let wrapperPath = this._extension.path + '/parent_monitor_wrapper.py';
+
+            // Stream container events within the self-terminating wrapper
+            let argv = [
+                'python3',
+                wrapperPath,
+                '--parent-pid',
+                parentPid,
+                'docker',
+                'events',
+                '--format',
+                '{{json .}}',
+                '--filter',
+                'type=container'
+            ];
             this._eventProc = launcher.spawnv(argv);
 
             let stdoutPipe = this._eventProc.get_stdout_pipe();
