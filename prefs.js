@@ -120,5 +120,20 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
                 console.error('[DockerPulse] Error saving poll-interval:', e);
             }
         });
+
+        let showCountRow = new Adw.SwitchRow({
+            title: 'Show Container Count',
+            subtitle: 'Display the number of running containers in the top status bar',
+            active: settings.get_boolean('show-container-count'),
+        });
+        group.add(showCountRow);
+
+        showCountRow.connect('notify::active', () => {
+            try {
+                settings.set_boolean('show-container-count', showCountRow.active);
+            } catch (e) {
+                console.error('[DockerPulse] Error saving show-container-count:', e);
+            }
+        });
     }
 }
