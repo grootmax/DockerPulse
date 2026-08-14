@@ -29,6 +29,16 @@ function getSettingInt(settings, key, fallback) {
     }
 }
 
+function getSettingBool(settings, key, fallback) {
+    if (!settings) return fallback;
+    try {
+        return settings.get_boolean(key);
+    } catch (e) {
+        console.error(`[DockerPulse] Failed to get boolean for key "${key}":`, e);
+        return fallback;
+    }
+}
+
 const DockerPulseIndicator = GObject.registerClass(
 class DockerPulseIndicator extends PanelMenu.Button {
     _init(extension) {
@@ -86,6 +96,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
     _onSettingsChanged() {
         this._projectPath = getSettingString(this._settings, 'project-path', '');
+        this._showContainerCount = getSettingBool(this._settings, 'show-container-count', true);
         
         // Stop current stream
         this._stopEventStream();
@@ -261,6 +272,44 @@ class DockerPulseIndicator extends PanelMenu.Button {
         });
     }
 
+    _parseDockerComposePsOutput(outputStr) {
+        if (!outputStr || !outputStr.trim()) {
+            return [];
+        }
+        const trimmed = outputStr.trim();
+        if (trimmed.startsWith('[')) {
+            try {
+                return JSON.parse(trimmed);
+            } catch (e) {
+                // Try line-by-line fallback
+            }
+        }
+
+        const lines = trimmed.split('\n');
+        const containers = [];
+        for (const line of lines) {
+            if (line.trim()) {
+                try {
+                    containers.push(JSON.parse(line));
+                } catch (e) {
+                    // Ignore line-level parsing error
+                }
+            }
+        }
+        return containers;
+    }
+
+    _isContainerActive(c) {
+        const state = (c.State || c.state || '').toLowerCase();
+        const status = (c.Status || c.status || '').toLowerCase();
+        const health = (c.Health || c.health || '').toLowerCase();
+
+        const isRunning = state === 'running' || state === 'up' || status.includes('up');
+        const isHealthy = health === 'healthy' || health === '' || health === 'starting';
+
+        return isRunning && isHealthy;
+    }
+
     async _refreshState() {
         if (!this._projectPath) {
             this._cachedContainers = [];
@@ -291,18 +340,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             if (result.success) {
                 let output = result.stdout ? result.stdout.trim() : '';
-                let containers = [];
-                if (output.startsWith('[')) {
-                    containers = JSON.parse(output);
-                } else if (output.length > 0) {
-                    containers = output.split('\n').map(line => {
-                        try {
-                            return JSON.parse(line.trim());
-                        } catch (e) {
-                            return null;
-                        }
-                    }).filter(Boolean);
-                }
+                let containers = this._parseDockerComposePsOutput(output);
 
                 this._cachedContainers = containers;
                 
@@ -312,11 +350,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let restarting = 0;
 
                 containers.forEach(item => {
-                    let state = (item.State || item.state || '').toLowerCase();
-                    if (state === 'running' || state === 'up') {
+                    if (this._isContainerActive(item)) {
                         running++;
-                    } else if (state === 'restarting') {
-                        restarting++;
+                    } else {
+                        let state = (item.State || item.state || '').toLowerCase();
+                        if (state === 'restarting') {
+                            restarting++;
+                        }
                     }
                 });
 
@@ -386,6 +426,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
         this._statusLabel.set_text(emoji);
         this._countLabel.set_text(countText);
+        this._countLabel.visible = this._showContainerCount;
     }
 
     _buildMenu() {
