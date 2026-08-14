@@ -5,10 +5,42 @@ import Gtk from 'gi://Gtk';
 
 export default class DockerPulsePreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
-        let settings = this.getSettings();
+        let settings = null;
+        try {
+            settings = this.getSettings();
+        } catch (e) {
+            console.error('[DockerPulse] Failed to load settings:', e);
+        }
 
         let page = new Adw.PreferencesPage();
         window.add(page);
+
+        if (!settings) {
+            let errorGroup = new Adw.PreferencesGroup({
+                title: 'Configuration Error',
+                description: 'The GSettings schemas for DockerPulse are missing or corrupted.',
+            });
+            page.add(errorGroup);
+
+            let errorRow = new Adw.ActionRow({
+                title: 'Schema Unavailable',
+                subtitle: 'Please make sure you compiled schemas locally, or ran "make install" in the extension directory.',
+            });
+            errorGroup.add(errorRow);
+
+            let helpLabel = new Gtk.Label({
+                label: 'To resolve this, please run:\n  $ make install\nand restart GNOME Shell or log out and log back in.',
+                use_markup: false,
+                halign: Gtk.Align.START,
+                wrap: true,
+                margin_start: 12,
+                margin_end: 12,
+                margin_top: 12,
+                margin_bottom: 12,
+            });
+            errorGroup.add(helpLabel);
+            return;
+        }
 
         let group = new Adw.PreferencesGroup({
             title: 'General Settings',
@@ -47,6 +79,46 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
                     console.error('[DockerPulse] Error selecting folder:', e);
                 }
             });
+        });
+
+        let nameRow = new Adw.EntryRow({
+            title: 'Monitored Project Name',
+            text: settings.get_string('project-name') || '',
+            placeholder_text: 'Falls back to directory name if empty',
+        });
+        group.add(nameRow);
+
+        nameRow.connect('changed', () => {
+            try {
+                settings.set_string('project-name', nameRow.get_text().trim());
+            } catch (e) {
+                console.error('[DockerPulse] Error saving project-name:', e);
+            }
+        });
+
+        let adj = new Gtk.Adjustment({
+            value: settings.get_int('poll-interval') || 25,
+            lower: 5,
+            upper: 300,
+            step_increment: 1,
+            page_increment: 10,
+        });
+
+        let pollRow = new Adw.SpinRow({
+            title: 'Polling Interval (seconds)',
+            subtitle: 'How often to refresh container status',
+            adjustment: adj,
+            climb_rate: 1.0,
+            digits: 0,
+        });
+        group.add(pollRow);
+
+        pollRow.connect('changed', () => {
+            try {
+                settings.set_int('poll-interval', pollRow.get_value());
+            } catch (e) {
+                console.error('[DockerPulse] Error saving poll-interval:', e);
+            }
         });
     }
 }
