@@ -119,6 +119,8 @@ function runAllTests() {
     }
 }
 
+runAllTests();
+
 if (testPassed) {
     console.log('🎉 All logic tests passed successfully!');
     if (!process.env.JEST_WORKER_ID) {

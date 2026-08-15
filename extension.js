@@ -11,8 +11,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import { ProcessRegistry } from './processRegistry.js';
-
 function getSettingString(settings, key, fallback) {
     if (!settings) return fallback;
     try {
@@ -80,6 +78,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
         // Cached state (read from for UI/menu rendering)
         this._cachedContainers = [];
         this._cachedStatus = 'grey'; // 'green', 'yellow', 'red', 'grey'
+        this._cachedActiveCount = 0;
         this._cachedProjectName = '';
         this._unhealthyContainers = new Set();
 
@@ -123,6 +122,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             this._cachedProjectName = '';
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._cachedActiveCount = 0;
             this._updateUI();
         }
         
@@ -349,6 +349,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
         if (!this._projectPath) {
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._cachedActiveCount = 0;
             this._updateUI();
             return;
         }
@@ -417,6 +418,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     }
                 });
 
+                this._cachedActiveCount = active;
+
                 if (total === 0) {
                     this._cachedStatus = 'red'; // No containers running or created (stack down)
                 } else if (active === total) {
@@ -438,6 +441,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 // Command failed - e.g. daemon unreachable or docker compose config error
                 this._cachedContainers = [];
                 this._cachedStatus = 'grey';
+                this._cachedActiveCount = 0;
                 this._backoffPollInterval();
                 this._updateUI();
             }
@@ -445,6 +449,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             // Exception - daemon unreachable
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._cachedActiveCount = 0;
             this._backoffPollInterval();
             this._updateUI();
         }
@@ -473,12 +478,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             if (this._cachedStatus !== 'grey') {
                 let total = this._cachedContainers.length;
-                let active = 0;
-                this._cachedContainers.forEach(item => {
-                    if (this._isContainerActive(item)) {
-                        running++;
-                    }
-                });
+                let active = this._cachedActiveCount || 0;
                 countText = ` ${active}/${total}`;
             } else {
                 countText = ' --';
@@ -548,15 +548,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
-                let health = (item.Health || item.health || '').toLowerCase();
-                let status = item.Status || item.status || state;
-
                 let health = '';
                 if (item.Health !== undefined && item.Health !== null) {
                     health = String(item.Health).toLowerCase();
                 } else if (item.health !== undefined && item.health !== null) {
                     health = String(item.health).toLowerCase();
                 }
+                let status = item.Status || item.status || state;
 
                 let stateEmoji = '⚪';
                 let displayStatus = status;
@@ -578,7 +576,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     displayStatus = 'unhealthy';
                 } else {
                     stateEmoji = '🔴';
-                    healthLabel = ' [inactive]';
                 }
 
                 // Submenu for each container containing actions

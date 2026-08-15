@@ -1,5 +1,35 @@
 import { jest } from '@jest/globals';
 
+let spawnedArgvs = [];
+let spawnedCwds = [];
+
+class MockSubprocess {
+    constructor(argv) {
+        this.argv = argv;
+    }
+    get_stdout_pipe() {
+        return {};
+    }
+    communicate_utf8_async(a, b, callback) {
+        // Mock communication finishing immediately to avoid pending promises
+        process.nextTick(() => {
+            callback(this, 'dummy-res');
+        });
+    }
+    communicate_utf8_finish(res) {
+        return [true, '[]', ''];
+    }
+    wait_async(cancellable, callback) {
+        process.nextTick(() => {
+            callback(this, 'dummy-res');
+        });
+    }
+    wait_finish(res) {
+        return true;
+    }
+    force_exit() {}
+}
+
 // Virtual mock for gi://GObject module to run in Node/Jest environment
 jest.unstable_mockModule('gi://GObject', () => {
     return {
@@ -15,8 +45,10 @@ jest.unstable_mockModule('gi://GLib', () => {
         default: {
             timeout_add_seconds: () => 1,
             source_remove: () => {},
-            get_pid: () => 1234,
+            get_pid: () => 12345,
             PRIORITY_DEFAULT: 0,
+            SOURCE_REMOVE: false,
+            SOURCE_CONTINUE: true,
         }
     };
 }, { virtual: true });
@@ -52,78 +84,7 @@ jest.unstable_mockModule('gi://St', () => {
     };
 }, { virtual: true });
 
-// Virtual mock for GNOME Shell UI modules
-jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
-    return {
-        panel: {
-            addToStatusArea: () => {},
-        }
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
-    return {
-        Button: class {
-            constructor() {
-                this.menu = {
-                    connect: () => {},
-                    removeAll: () => {},
-                    addMenuItem: () => {},
-                };
-            }
-            destroy() {}
-        }
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('resource:///org/gnome/shell/ui/popupMenu.js', () => {
-    return {
-        PopupMenuItem: class {
-            constructor() {
-                this.label = { add_style_class_name: () => {} };
-            }
-            connect() {}
-            add_child() {}
-        },
-        PopupSeparatorMenuItem: class {},
-        PopupSubMenuMenuItem: class {
-            constructor() {
-                this.menu = { addMenuItem: () => {} };
-            }
-        },
-    };
-}, { virtual: true });
-
 // Virtual mock for gi://Gio module to run in Node/Jest environment
-jest.unstable_mockModule('gi://Gio', () => {
-    return {
-        default: {
-            registerClass: (...args) => args[args.length - 1],
-        }
-    };
-}, { virtual: true });
-
-let spawnedArgvs = [];
-let spawnedCwds = [];
-
-class MockSubprocess {
-    constructor(argv) {
-        this.argv = argv;
-    }
-    get_stdout_pipe() {
-        return {};
-    }
-    communicate_utf8_async(a, b, callback) {
-        // Mock communication finishing immediately to avoid pending promises
-        process.nextTick(() => {
-            callback(this, 'dummy-res');
-        });
-    }
-    communicate_utf8_finish(res) {
-        return [true, '[]', ''];
-    }
-}
-
 jest.unstable_mockModule('gi://Gio', () => {
     return {
         default: {
@@ -137,7 +98,23 @@ jest.unstable_mockModule('gi://Gio', () => {
                     return new MockSubprocess(argv);
                 }
             },
+            Subprocess: class {
+                constructor(config) {
+                    this.argv = config ? config.argv : [];
+                }
+                init() {}
+                wait_async(cancellable, callback) {
+                    process.nextTick(() => {
+                        callback(this, 'dummy-res');
+                    });
+                }
+                wait_finish(res) {
+                    return true;
+                }
+                force_exit() {}
+            },
             SubprocessFlags: {
+                NONE: 0,
                 STDOUT_PIPE: 1,
                 STDERR_PIPE: 2,
             },
@@ -156,61 +133,7 @@ jest.unstable_mockModule('gi://Gio', () => {
     };
 }, { virtual: true });
 
-jest.unstable_mockModule('gi://GLib', () => {
-    return {
-        Extension: class {
-            constructor() {
-                this.uuid = 'dockerpulse@github.com';
-                this.path = '/app';
-            }
-            enable() {}
-            disable() {}
-        },
-        gettext: (str) => str
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('gi://Clutter', () => {
-    return {
-        default: {
-            ActorAlign: {
-                CENTER: 1,
-            },
-        }
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('gi://St', () => {
-    return {
-        default: {
-            BoxLayout: class {
-                constructor() {}
-                add_child() {}
-            },
-            Label: class {
-                constructor() {}
-                set_text() {}
-            },
-        }
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', () => {
-    return {
-        Extension: class {
-            constructor() {}
-            getSettings() {
-                return {
-                    connect: () => 1,
-                    get_string: () => '/path/to/my-project',
-                    get_int: () => 25,
-                };
-            }
-        },
-        gettext: (text) => text,
-    };
-}, { virtual: true });
-
+// Virtual mock for GNOME Shell UI modules
 jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
     return {
         panel: {
@@ -241,15 +164,40 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
 
 jest.unstable_mockModule('resource:///org/gnome/shell/ui/popupMenu.js', () => {
     return {
-        PopupMenuItem: class {},
+        PopupMenuItem: class {
+            constructor() {
+                this.label = { add_style_class_name: () => {} };
+            }
+            connect() {}
+            add_child() {}
+        },
         PopupSeparatorMenuItem: class {},
         PopupSubMenuMenuItem: class {
             constructor() {
-                this.menu = {
-                    addMenuItem: () => {},
+                this.menu = { addMenuItem: () => {} };
+            }
+        },
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', () => {
+    return {
+        Extension: class {
+            constructor() {}
+            getSettings() {
+                return {
+                    connect: () => 1,
+                    get_string: (key) => {
+                        if (key === 'project-path') return '/path/to/my-project';
+                        if (key === 'project-name') return 'my-project';
+                        return '';
+                    },
+                    get_int: () => 25,
+                    get_boolean: () => true,
                 };
             }
-        }
+        },
+        gettext: (text) => text,
     };
 }, { virtual: true });
 
