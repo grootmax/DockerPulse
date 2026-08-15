@@ -11,8 +11,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import { ProcessRegistry } from './processRegistry.js';
-
 function getSettingString(settings, key, fallback) {
     if (!settings) return fallback;
     try {
@@ -551,7 +549,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let health = (item.Health || item.health || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
-                let health = '';
                 if (item.Health !== undefined && item.Health !== null) {
                     health = String(item.Health).toLowerCase();
                 } else if (item.health !== undefined && item.health !== null) {
