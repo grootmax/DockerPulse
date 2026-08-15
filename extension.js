@@ -11,8 +11,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import { ProcessRegistry } from './processRegistry.js';
-
 function getSettingString(settings, key, fallback) {
     if (!settings) return fallback;
     try {
@@ -476,7 +474,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let active = 0;
                 this._cachedContainers.forEach(item => {
                     if (this._isContainerActive(item)) {
-                        running++;
+                        active++;
                     }
                 });
                 countText = ` ${active}/${total}`;
@@ -548,7 +546,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
-                let health = (item.Health || item.health || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
                 let health = '';
@@ -559,6 +556,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 }
 
                 let stateEmoji = '⚪';
+                let healthLabel = '';
                 let displayStatus = status;
 
                 if (state === 'running' || state === 'up') {
