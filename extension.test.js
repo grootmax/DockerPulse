@@ -15,7 +15,7 @@ jest.unstable_mockModule('gi://GLib', () => {
         default: {
             timeout_add_seconds: () => 1,
             source_remove: () => {},
-            get_pid: () => 1234,
+            get_pid: () => 12345,
             PRIORITY_DEFAULT: 0,
         }
     };
@@ -35,11 +35,16 @@ jest.unstable_mockModule('gi://St', () => {
     return {
         default: {
             BoxLayout: class {
+                constructor() {}
                 add_child() {}
             },
             Label: class {
-                constructor() {}
-                set_text() {}
+                constructor(props) {
+                    this.text = props ? props.text : '';
+                }
+                set_text(text) {
+                    this.text = text;
+                }
             },
             Icon: class {
                 constructor() {}
@@ -105,6 +110,8 @@ jest.unstable_mockModule('gi://Gio', () => {
 
 let spawnedArgvs = [];
 let spawnedCwds = [];
+let popupSubMenuItems = [];
+let popupMenuItems = [];
 
 class MockSubprocess {
     constructor(argv) {
@@ -156,40 +163,11 @@ jest.unstable_mockModule('gi://Gio', () => {
     };
 }, { virtual: true });
 
-jest.unstable_mockModule('gi://GLib', () => {
-    return {
-        Extension: class {
-            constructor() {
-                this.uuid = 'dockerpulse@github.com';
-                this.path = '/app';
-            }
-            enable() {}
-            disable() {}
-        },
-        gettext: (str) => str
-    };
-}, { virtual: true });
-
 jest.unstable_mockModule('gi://Clutter', () => {
     return {
         default: {
             ActorAlign: {
                 CENTER: 1,
-            },
-        }
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('gi://St', () => {
-    return {
-        default: {
-            BoxLayout: class {
-                constructor() {}
-                add_child() {}
-            },
-            Label: class {
-                constructor() {}
-                set_text() {}
             },
         }
     };
@@ -241,13 +219,23 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/panelMenu.js', () => {
 
 jest.unstable_mockModule('resource:///org/gnome/shell/ui/popupMenu.js', () => {
     return {
-        PopupMenuItem: class {},
+        PopupMenuItem: class {
+            constructor(label) {
+                this.label_text = label;
+                this.label = { add_style_class_name: () => {} };
+                popupMenuItems.push(this);
+            }
+            connect() {}
+            add_child() {}
+        },
         PopupSeparatorMenuItem: class {},
         PopupSubMenuMenuItem: class {
-            constructor() {
+            constructor(label) {
+                this.label_text = label;
                 this.menu = {
                     addMenuItem: () => {},
                 };
+                popupSubMenuItems.push(this);
             }
         }
     };
@@ -262,6 +250,8 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
     beforeEach(() => {
         spawnedArgvs = [];
         spawnedCwds = [];
+        popupSubMenuItems = [];
+        popupMenuItems = [];
         extensionInstance = new DockerPulseExtension();
         // Mock properties normally provided by GNOME Shell at runtime
         extensionInstance.path = '/home/user/.local/share/gnome-shell/extensions/dockerpulse';
@@ -290,5 +280,70 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '--filter',
             'type=container'
         ]);
+    });
+
+    test('should dynamically calculate and display correct fractions of running containers relative to total', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._cachedStatus = 'yellow';
+        indicator._cachedContainers = [
+            { name: 'c1', state: 'running', health: 'healthy' },
+            { name: 'c2', state: 'running', health: 'healthy' },
+            { name: 'c3', state: 'exited' }
+        ];
+
+        indicator._updateUI();
+
+        // c1 and c2 are active, c3 is exited, so total = 3, active = 2
+        expect(indicator._statusLabel.text).toBe('🟡');
+        expect(indicator._countLabel.text).toBe(' 2/3');
+    });
+
+    test('should degrade gracefully and parse anomalous or missing state data', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._cachedStatus = 'yellow';
+        // Simulating a container with missing properties
+        indicator._cachedContainers = [
+            { name: 'good-container', state: 'running', health: 'healthy' },
+            { state: 'running' }, // missing name/health
+            null, // completely null item which might trigger errors
+            { name: 'bad-container' } // missing state
+        ];
+
+        // Should execute without throwing any exceptions
+        expect(() => {
+            indicator._buildMenu();
+        }).not.toThrow();
+
+        // The good container and others that parsed successfully should be rendered
+        expect(popupSubMenuItems.length).toBeGreaterThan(0);
+        
+        // Assert that the good container has correct stateEmoji and displays running status
+        const goodItem = popupSubMenuItems.find(item => item.label_text.includes('good-container'));
+        expect(goodItem).toBeDefined();
+        expect(goodItem.label_text).toContain('🟢');
+    });
+
+    test('should display [inactive] label for stopped/inactive containers', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._cachedStatus = 'yellow';
+        indicator._cachedContainers = [
+            { name: 'stopped-container', state: 'exited', status: 'exited' }
+        ];
+
+        indicator._buildMenu();
+
+        const stoppedItem = popupSubMenuItems.find(item => item.label_text.includes('stopped-container'));
+        expect(stoppedItem).toBeDefined();
+        expect(stoppedItem.label_text).toContain('🔴');
+        expect(stoppedItem.label_text).toContain('[inactive]');
     });
 });

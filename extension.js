@@ -11,8 +11,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import { ProcessRegistry } from './processRegistry.js';
-
 function getSettingString(settings, key, fallback) {
     if (!settings) return fallback;
     try {
@@ -451,189 +449,202 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _updateUI() {
-        let emoji = '⚪';
-        let countText = ' --';
+        try {
+            let emoji = '⚪';
+            let countText = ' --';
 
-        if (this._projectPath) {
-            switch (this._cachedStatus) {
-                case 'green':
-                    emoji = '🟢';
-                    break;
-                case 'yellow':
-                    emoji = '🟡';
-                    break;
-                case 'red':
-                    emoji = '🔴';
-                    break;
-                case 'grey':
-                default:
-                    emoji = '⚪';
-                    break;
-            }
+            if (this._projectPath) {
+                switch (this._cachedStatus) {
+                    case 'green':
+                        emoji = '🟢';
+                        break;
+                    case 'yellow':
+                        emoji = '🟡';
+                        break;
+                    case 'red':
+                        emoji = '🔴';
+                        break;
+                    case 'grey':
+                    default:
+                        emoji = '⚪';
+                        break;
+                }
 
-            if (this._cachedStatus !== 'grey') {
-                let total = this._cachedContainers.length;
-                let active = 0;
-                this._cachedContainers.forEach(item => {
-                    if (this._isContainerActive(item)) {
-                        running++;
-                    }
-                });
-                countText = ` ${active}/${total}`;
+                if (this._cachedStatus !== 'grey') {
+                    let total = this._cachedContainers.length;
+                    let active = 0;
+                    this._cachedContainers.forEach(item => {
+                        if (this._isContainerActive(item)) {
+                            active++;
+                        }
+                    });
+                    countText = ` ${active}/${total}`;
+                } else {
+                    countText = ' --';
+                }
             } else {
-                countText = ' --';
+                emoji = '⚪';
+                countText = ' [no path]';
             }
-        } else {
-            emoji = '⚪';
-            countText = ' [no path]';
-        }
 
-        this._statusLabel.set_text(emoji);
-        this._countLabel.set_text(countText);
-        this._countLabel.visible = this._showContainerCount;
+            this._statusLabel.set_text(emoji);
+            this._countLabel.set_text(countText);
+            this._countLabel.visible = this._showContainerCount;
+        } catch (e) {
+            console.error('[DockerPulse] Error updating UI:', e);
+        }
     }
 
     _buildMenu() {
-        this.menu.removeAll();
+        try {
+            this.menu.removeAll();
 
-        // 1. Header showing project path
-        let titleItem = new PopupMenu.PopupMenuItem(
-            this._cachedProjectName ? `Project: ${this._cachedProjectName}` : 'DockerPulse',
-            { reactive: true }
-        );
-        titleItem.activate = () => {};
-
-        let refreshIcon = new St.Icon({
-            icon_name: 'view-refresh-symbolic',
-            style_class: 'system-status-icon',
-        });
-        let refreshButton = new St.Button({
-            child: refreshIcon,
-            reactive: true,
-            can_focus: true,
-            track_hover: true,
-            style_class: 'dockerpulse-refresh-button',
-            x_align: Clutter.ActorAlign.END,
-            x_expand: true,
-        });
-        refreshButton.connect('clicked', () => {
-            this._refreshState();
-        });
-        titleItem.add_child(refreshButton);
-        this.menu.addMenuItem(titleItem);
-
-        if (this._projectPath) {
-            let pathItem = new PopupMenu.PopupMenuItem(
-                this._projectPath,
-                { reactive: false, style_class: 'dockerpulse-path-item' }
+            // 1. Header showing project path
+            let titleItem = new PopupMenu.PopupMenuItem(
+                this._cachedProjectName ? `Project: ${this._cachedProjectName}` : 'DockerPulse',
+                { reactive: true }
             );
-            pathItem.label.add_style_class_name('dockerpulse-muted');
-            this.menu.addMenuItem(pathItem);
-        }
+            titleItem.activate = () => {};
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            let refreshIcon = new St.Icon({
+                icon_name: 'view-refresh-symbolic',
+                style_class: 'system-status-icon',
+            });
+            let refreshButton = new St.Button({
+                child: refreshIcon,
+                reactive: true,
+                can_focus: true,
+                track_hover: true,
+                style_class: 'dockerpulse-refresh-button',
+                x_align: Clutter.ActorAlign.END,
+                x_expand: true,
+            });
+            refreshButton.connect('clicked', () => {
+                this._refreshState();
+            });
+            titleItem.add_child(refreshButton);
+            this.menu.addMenuItem(titleItem);
 
-        // 2. Container List (built from cache!)
-        if (!this._projectPath) {
-            let noPathItem = new PopupMenu.PopupMenuItem('No project path configured', { reactive: false });
-            this.menu.addMenuItem(noPathItem);
-        } else if (this._cachedStatus === 'grey') {
-            let errorItem = new PopupMenu.PopupMenuItem('Docker daemon unreachable', { reactive: false });
-            this.menu.addMenuItem(errorItem);
-        } else if (this._cachedContainers.length === 0) {
-            let emptyItem = new PopupMenu.PopupMenuItem('No containers found / Stack down', { reactive: false });
-            this.menu.addMenuItem(emptyItem);
-        } else {
-            this._cachedContainers.forEach(item => {
-                let name = item.Name || item.name || 'container';
-                let service = item.Service || item.service || name;
-                let state = (item.State || item.state || '').toLowerCase();
-                let health = (item.Health || item.health || '').toLowerCase();
-                let status = item.Status || item.status || state;
-
-                let health = '';
-                if (item.Health !== undefined && item.Health !== null) {
-                    health = String(item.Health).toLowerCase();
-                } else if (item.health !== undefined && item.health !== null) {
-                    health = String(item.health).toLowerCase();
-                }
-
-                let stateEmoji = '⚪';
-                let displayStatus = status;
-
-                if (state === 'running' || state === 'up') {
-                    if (health === 'starting') {
-                        stateEmoji = '🟡';
-                        displayStatus = 'starting';
-                    } else if (health === 'unhealthy') {
-                        stateEmoji = '⚠️';
-                        displayStatus = 'unhealthy';
-                    } else {
-                        stateEmoji = '🟢';
-                    }
-                } else if (state === 'restarting') {
-                    stateEmoji = '🟡';
-                } else if (health === 'unhealthy' || state === 'unhealthy') {
-                    stateEmoji = '⚠️';
-                    displayStatus = 'unhealthy';
-                } else {
-                    stateEmoji = '🔴';
-                    healthLabel = ' [inactive]';
-                }
-
-                // Submenu for each container containing actions
-                let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    stateEmoji + ' ' + name + ' (' + displayStatus + ')'
+            if (this._projectPath) {
+                let pathItem = new PopupMenu.PopupMenuItem(
+                    this._projectPath,
+                    { reactive: false, style_class: 'dockerpulse-path-item' }
                 );
-
-                // Quick Actions for Container
-                let logsItem = new PopupMenu.PopupMenuItem('Stream Logs');
-                logsItem.connect('activate', () => {
-                    this._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', service]);
-                });
-                containerSubMenu.menu.addMenuItem(logsItem);
-
-                let shellItem = new PopupMenu.PopupMenuItem('Interactive Shell');
-                shellItem.connect('activate', () => {
-                    this._spawnTerminalCommand(['docker', 'compose', 'exec', service, 'sh']);
-                });
-                containerSubMenu.menu.addMenuItem(shellItem);
-
-                this.menu.addMenuItem(containerSubMenu);
-            });
-        }
-
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-        // 3. Stack Actions
-        if (this._projectPath && this._cachedStatus !== 'grey') {
-            let startItem = new PopupMenu.PopupMenuItem('Start Stack');
-            startItem.connect('activate', () => {
-                this._runStackCommand(['docker', 'compose', 'up', '-d']);
-            });
-            this.menu.addMenuItem(startItem);
-
-            let restartItem = new PopupMenu.PopupMenuItem('Restart Stack');
-            restartItem.connect('activate', () => {
-                this._runStackCommand(['docker', 'compose', 'restart']);
-            });
-            this.menu.addMenuItem(restartItem);
-
-            let stopItem = new PopupMenu.PopupMenuItem('Stop Stack');
-            stopItem.connect('activate', () => {
-                this._runStackCommand(['docker', 'compose', 'stop']);
-            });
-            this.menu.addMenuItem(stopItem);
+                pathItem.label.add_style_class_name('dockerpulse-muted');
+                this.menu.addMenuItem(pathItem);
+            }
 
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        }
 
-        // 4. Extension Settings
-        let settingsItem = new PopupMenu.PopupMenuItem('Settings');
-        settingsItem.connect('activate', () => {
-            this._extension.openPreferences();
-        });
-        this.menu.addMenuItem(settingsItem);
+            // 2. Container List (built from cache!)
+            if (!this._projectPath) {
+                let noPathItem = new PopupMenu.PopupMenuItem('No project path configured', { reactive: false });
+                this.menu.addMenuItem(noPathItem);
+            } else if (this._cachedStatus === 'grey') {
+                let errorItem = new PopupMenu.PopupMenuItem('Docker daemon unreachable', { reactive: false });
+                this.menu.addMenuItem(errorItem);
+            } else if (this._cachedContainers.length === 0) {
+                let emptyItem = new PopupMenu.PopupMenuItem('No containers found / Stack down', { reactive: false });
+                this.menu.addMenuItem(emptyItem);
+            } else {
+                this._cachedContainers.forEach(item => {
+                    try {
+                        let name = item.Name || item.name || 'container';
+                        let service = item.Service || item.service || name;
+                        let state = (item.State || item.state || '').toLowerCase();
+                        let health = (item.Health || item.health || '').toLowerCase();
+                        let status = item.Status || item.status || state;
+
+                        health = '';
+                        if (item.Health !== undefined && item.Health !== null) {
+                            health = String(item.Health).toLowerCase();
+                        } else if (item.health !== undefined && item.health !== null) {
+                            health = String(item.health).toLowerCase();
+                        }
+
+                        let healthLabel = '';
+                        let stateEmoji = '⚪';
+                        let displayStatus = status;
+
+                        if (state === 'running' || state === 'up') {
+                            if (health === 'starting') {
+                                stateEmoji = '🟡';
+                                displayStatus = 'starting';
+                            } else if (health === 'unhealthy') {
+                                stateEmoji = '⚠️';
+                                displayStatus = 'unhealthy';
+                            } else {
+                                stateEmoji = '🟢';
+                            }
+                        } else if (state === 'restarting') {
+                            stateEmoji = '🟡';
+                        } else if (health === 'unhealthy' || state === 'unhealthy') {
+                            stateEmoji = '⚠️';
+                            displayStatus = 'unhealthy';
+                        } else {
+                            stateEmoji = '🔴';
+                            healthLabel = ' [inactive]';
+                        }
+
+                        // Submenu for each container containing actions
+                        let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
+                            stateEmoji + ' ' + name + ' (' + displayStatus + healthLabel + ')'
+                        );
+
+                        // Quick Actions for Container
+                        let logsItem = new PopupMenu.PopupMenuItem('Stream Logs');
+                        logsItem.connect('activate', () => {
+                            this._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', service]);
+                        });
+                        containerSubMenu.menu.addMenuItem(logsItem);
+
+                        let shellItem = new PopupMenu.PopupMenuItem('Interactive Shell');
+                        shellItem.connect('activate', () => {
+                            this._spawnTerminalCommand(['docker', 'compose', 'exec', service, 'sh']);
+                        });
+                        containerSubMenu.menu.addMenuItem(shellItem);
+
+                        this.menu.addMenuItem(containerSubMenu);
+                    } catch (innerError) {
+                        console.error('[DockerPulse] Failed to parse/render individual container item:', innerError);
+                    }
+                });
+            }
+
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            // 3. Stack Actions
+            if (this._projectPath && this._cachedStatus !== 'grey') {
+                let startItem = new PopupMenu.PopupMenuItem('Start Stack');
+                startItem.connect('activate', () => {
+                    this._runStackCommand(['docker', 'compose', 'up', '-d']);
+                });
+                this.menu.addMenuItem(startItem);
+
+                let restartItem = new PopupMenu.PopupMenuItem('Restart Stack');
+                restartItem.connect('activate', () => {
+                    this._runStackCommand(['docker', 'compose', 'restart']);
+                });
+                this.menu.addMenuItem(restartItem);
+
+                let stopItem = new PopupMenu.PopupMenuItem('Stop Stack');
+                stopItem.connect('activate', () => {
+                    this._runStackCommand(['docker', 'compose', 'stop']);
+                });
+                this.menu.addMenuItem(stopItem);
+
+                this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            }
+
+            // 4. Extension Settings
+            let settingsItem = new PopupMenu.PopupMenuItem('Settings');
+            settingsItem.connect('activate', () => {
+                this._extension.openPreferences();
+            });
+            this.menu.addMenuItem(settingsItem);
+        } catch (e) {
+            console.error('[DockerPulse] Error building menu:', e);
+        }
     }
 
     async _runStackCommand(argv) {
