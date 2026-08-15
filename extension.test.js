@@ -15,7 +15,7 @@ jest.unstable_mockModule('gi://GLib', () => {
         default: {
             timeout_add_seconds: () => 1,
             source_remove: () => {},
-            get_pid: () => 1234,
+            get_pid: () => 12345,
             PRIORITY_DEFAULT: 0,
         }
     };
@@ -153,20 +153,6 @@ jest.unstable_mockModule('gi://Gio', () => {
                 CANCELLED: 1,
             },
         }
-    };
-}, { virtual: true });
-
-jest.unstable_mockModule('gi://GLib', () => {
-    return {
-        Extension: class {
-            constructor() {
-                this.uuid = 'dockerpulse@github.com';
-                this.path = '/app';
-            }
-            enable() {}
-            disable() {}
-        },
-        gettext: (str) => str
     };
 }, { virtual: true });
 

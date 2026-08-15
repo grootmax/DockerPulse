@@ -76,6 +76,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this.add_child(this._box);
 
         // Cached state (read from for UI/menu rendering)
+        this._state = Object.freeze({
+            containers: [],
+            status: 'grey', // 'green', 'yellow', 'red', 'grey'
+            projectName: '',
+            activeCount: 0,
+            totalCount: 0
+        });
         this._cachedContainers = [];
         this._cachedStatus = 'grey'; // 'green', 'yellow', 'red', 'grey'
         this._cachedProjectName = '';
@@ -121,6 +128,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
             this._cachedProjectName = '';
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._state = Object.freeze({
+                containers: [],
+                status: 'grey',
+                projectName: '',
+                activeCount: 0,
+                totalCount: 0
+            });
             this._updateUI();
         }
         
@@ -347,6 +361,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
         if (!this._projectPath) {
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._state = Object.freeze({
+                containers: [],
+                status: 'grey',
+                projectName: '',
+                activeCount: 0,
+                totalCount: 0
+            });
             this._updateUI();
             return;
         }
@@ -380,8 +401,11 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
                 this._cachedContainers = containers;
                 
-                // Track health transition notifications
+                // Track health transition notifications & active containers count in a single background pass
                 let currentUnhealthy = new Set();
+                let active = 0;
+                let total = containers.length;
+
                 containers.forEach(item => {
                     let name = item.Name || item.name || '';
                     let state = (item.State || item.state || '').toLowerCase();
@@ -402,28 +426,35 @@ class DockerPulseIndicator extends PanelMenu.Button {
                             }
                         }
                     }
-                });
-                this._unhealthyContainers = currentUnhealthy;
 
-                // Determine overall status
-                let total = containers.length;
-                let active = 0;
-
-                containers.forEach(item => {
                     if (this._isContainerActive(item)) {
                         active++;
                     }
                 });
+                this._unhealthyContainers = currentUnhealthy;
 
+                // Determine overall status
+                let status = 'grey';
                 if (total === 0) {
-                    this._cachedStatus = 'red'; // No containers running or created (stack down)
+                    status = 'red'; // No containers running or created (stack down)
                 } else if (active === total) {
-                    this._cachedStatus = 'green';
+                    status = 'green';
                 } else if (active > 0) {
-                    this._cachedStatus = 'yellow';
+                    status = 'yellow';
                 } else {
-                    this._cachedStatus = 'red';
+                    status = 'red';
                 }
+
+                this._cachedStatus = status;
+
+                // Build a pre-calculated, read-only state object
+                this._state = Object.freeze({
+                    containers: containers,
+                    status: status,
+                    projectName: this._cachedProjectName,
+                    activeCount: active,
+                    totalCount: total
+                });
 
                 // Reset poll interval backoff since we succeeded
                 let baseInterval = getSettingInt(this._settings, 'poll-interval', 25);
@@ -436,6 +467,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 // Command failed - e.g. daemon unreachable or docker compose config error
                 this._cachedContainers = [];
                 this._cachedStatus = 'grey';
+                this._state = Object.freeze({
+                    containers: [],
+                    status: 'grey',
+                    projectName: this._cachedProjectName,
+                    activeCount: 0,
+                    totalCount: 0
+                });
                 this._backoffPollInterval();
                 this._updateUI();
             }
@@ -443,6 +481,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
             // Exception - daemon unreachable
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
+            this._state = Object.freeze({
+                containers: [],
+                status: 'grey',
+                projectName: this._cachedProjectName,
+                activeCount: 0,
+                totalCount: 0
+            });
             this._backoffPollInterval();
             this._updateUI();
         }
@@ -453,7 +498,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
         let countText = ' --';
 
         if (this._projectPath) {
-            switch (this._cachedStatus) {
+            switch (this._state.status) {
                 case 'green':
                     emoji = '🟢';
                     break;
@@ -469,15 +514,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     break;
             }
 
-            if (this._cachedStatus !== 'grey') {
-                let total = this._cachedContainers.length;
-                let active = 0;
-                this._cachedContainers.forEach(item => {
-                    if (this._isContainerActive(item)) {
-                        running++;
-                    }
-                });
-                countText = ` ${active}/${total}`;
+            if (this._state.status !== 'grey') {
+                countText = ` ${this._state.activeCount}/${this._state.totalCount}`;
             } else {
                 countText = ' --';
             }
@@ -535,18 +573,17 @@ class DockerPulseIndicator extends PanelMenu.Button {
         if (!this._projectPath) {
             let noPathItem = new PopupMenu.PopupMenuItem('No project path configured', { reactive: false });
             this.menu.addMenuItem(noPathItem);
-        } else if (this._cachedStatus === 'grey') {
+        } else if (this._state.status === 'grey') {
             let errorItem = new PopupMenu.PopupMenuItem('Docker daemon unreachable', { reactive: false });
             this.menu.addMenuItem(errorItem);
-        } else if (this._cachedContainers.length === 0) {
+        } else if (this._state.containers.length === 0) {
             let emptyItem = new PopupMenu.PopupMenuItem('No containers found / Stack down', { reactive: false });
             this.menu.addMenuItem(emptyItem);
         } else {
-            this._cachedContainers.forEach(item => {
+            this._state.containers.forEach(item => {
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
-                let health = (item.Health || item.health || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
                 if (item.Health !== undefined && item.Health !== null) {
@@ -557,6 +594,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
                 let stateEmoji = '⚪';
                 let displayStatus = status;
+                let healthLabel = '';
 
                 if (state === 'running' || state === 'up') {
                     if (health === 'starting') {
@@ -603,7 +641,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // 3. Stack Actions
-        if (this._projectPath && this._cachedStatus !== 'grey') {
+        if (this._projectPath && this._state.status !== 'grey') {
             let startItem = new PopupMenu.PopupMenuItem('Start Stack');
             startItem.connect('activate', () => {
                 this._runStackCommand(['docker', 'compose', 'up', '-d']);
@@ -744,13 +782,6 @@ export default class DockerPulseExtension extends Extension {
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
-        }
-
-        if (this._registry) {
-            let count = this._registry.activeCount;
-            this._registry.cleanup();
-            this._registry = null;
-            console.log(`Cleaned up registry. Terminated ${count} background processes.`);
         }
     }
 }
