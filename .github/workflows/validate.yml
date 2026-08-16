@@ -1,0 +1,33 @@
+name: Validation and Testing Pipeline
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Syntax and Linter Validation (ESLint)
+        run: npx eslint .
+
+      - name: Run JSDoc Type-Checking (TSC)
+        run: npx tsc --project jsconfig.json
+
+      - name: Run Unit Tests
+        run: npm test

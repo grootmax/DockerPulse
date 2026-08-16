@@ -10,7 +10,6 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 
 function getSettingString(settings, key, fallback) {
     if (!settings) return fallback;
@@ -358,6 +357,46 @@ class DockerPulseIndicator extends PanelMenu.Button {
         return false;
     }
 
+    get _cachedContainers() {
+        return this._state ? this._state.containers : [];
+    }
+
+    set _cachedContainers(containers) {
+        let active = 0;
+        let total = 0;
+        if (Array.isArray(containers)) {
+            containers.forEach(item => {
+                if (item) {
+                    total++;
+                    if (this._isContainerActive(item)) {
+                        active++;
+                    }
+                }
+            });
+        }
+        this._state = Object.freeze({
+            containers: containers || [],
+            status: this._state ? this._state.status : 'grey',
+            projectName: this._state ? this._state.projectName : '',
+            activeCount: active,
+            totalCount: total
+        });
+    }
+
+    get _cachedStatus() {
+        return this._state ? this._state.status : 'grey';
+    }
+
+    set _cachedStatus(status) {
+        this._state = Object.freeze({
+            containers: this._state ? this._state.containers : [],
+            status: status,
+            projectName: this._state ? this._state.projectName : '',
+            activeCount: this._state ? this._state.activeCount : 0,
+            totalCount: this._state ? this._state.totalCount : 0
+        });
+    }
+
     async _refreshState() {
         if (!this._projectPath) {
             this._cachedContainers = [];
@@ -495,25 +534,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _updateUI() {
-        if (this._state.status !== this._cachedStatus || this._state.containers !== this._cachedContainers) {
-            let active = 0;
-            let total = this._cachedContainers ? this._cachedContainers.length : 0;
-            if (this._cachedContainers) {
-                this._cachedContainers.forEach(item => {
-                    if (item && this._isContainerActive(item)) {
-                        active++;
-                    }
-                });
-            }
-            this._state = Object.freeze({
-                containers: this._cachedContainers || [],
-                status: this._cachedStatus || 'grey',
-                projectName: this._cachedProjectName || '',
-                activeCount: active,
-                totalCount: total
-            });
-        }
-
         let emoji = '⚪';
         let countText = ' --';
 
@@ -550,25 +570,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _buildMenu() {
-        if (this._state.status !== this._cachedStatus || this._state.containers !== this._cachedContainers) {
-            let active = 0;
-            let total = this._cachedContainers ? this._cachedContainers.length : 0;
-            if (this._cachedContainers) {
-                this._cachedContainers.forEach(item => {
-                    if (item && this._isContainerActive(item)) {
-                        active++;
-                    }
-                });
-            }
-            this._state = Object.freeze({
-                containers: this._cachedContainers || [],
-                status: this._cachedStatus || 'grey',
-                projectName: this._cachedProjectName || '',
-                activeCount: active,
-                totalCount: total
-            });
-        }
-
         this.menu.removeAll();
 
         // 1. Header showing project path
@@ -625,8 +626,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
                 let status = item.Status || item.status || state;
-                let health = '';
 
+                let health = '';
                 if (item.Health !== undefined && item.Health !== null) {
                     health = String(item.Health).toLowerCase();
                 } else if (item.health !== undefined && item.health !== null) {
@@ -743,88 +744,45 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _spawnTerminalCommand(commandArgs) {
         if (!this._projectPath) return;
 
-        let workingDir = this._projectPath;
-        let preferredTerminal = getSettingString(this._settings, 'terminal-emulator', 'auto');
+        let ptyxisArgs = [
+            'ptyxis',
+            '--working-directory', this._projectPath,
+            '-e', commandArgs.join(' '),
+        ];
 
-        let defaultList = ['ptyxis', 'kgx', 'gnome-terminal', 'xterm'];
-        let tryList = [];
-        if (preferredTerminal && preferredTerminal !== 'auto') {
-            tryList.push(preferredTerminal);
-        }
-        for (let term of defaultList) {
-            if (!tryList.includes(term)) {
-                tryList.push(term);
-            }
-        }
+        let gnomeTerminalArgs = [
+            'gnome-terminal',
+            `--working-directory=${this._projectPath}`,
+            '--',
+        ].concat(commandArgs);
 
-        let success = false;
-        for (let term of tryList) {
-            let argv = [];
-            if (term === 'ptyxis') {
-                argv = ['ptyxis', '--working-directory', workingDir, '--'].concat(commandArgs);
-            } else if (term === 'kgx') {
-                argv = ['kgx', '--working-directory', workingDir, '--'].concat(commandArgs);
-            } else if (term === 'gnome-terminal') {
-                argv = ['gnome-terminal', '--working-directory=' + workingDir, '--'].concat(commandArgs);
-            } else if (term === 'xterm') {
-                argv = ['xterm', '-wdir', workingDir, '-e'].concat(commandArgs);
-            } else {
-                argv = [term, '--'].concat(commandArgs);
-            }
+        let kgxArgs = [
+            'kgx',
+            '--working-directory', this._projectPath,
+            '-e', commandArgs.join(' '),
+        ];
 
+        let xtermArgs = [
+            'xterm',
+            '-wdir', this._projectPath,
+            '-e', commandArgs.join(' '),
+        ];
+
+        try {
+            Gio.Subprocess.new(ptyxisArgs, Gio.SubprocessFlags.NONE);
+        } catch (e1) {
             try {
-                let proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
-                if (proc) {
-                    success = true;
-                    break;
+                Gio.Subprocess.new(gnomeTerminalArgs, Gio.SubprocessFlags.NONE);
+            } catch (e2) {
+                try {
+                    Gio.Subprocess.new(kgxArgs, Gio.SubprocessFlags.NONE);
+                } catch (e3) {
+                    try {
+                        Gio.Subprocess.new(xtermArgs, Gio.SubprocessFlags.NONE);
+                    } catch (e4) {
+                        console.error('[DockerPulse] Could not spawn terminal:', e4);
+                    }
                 }
-            } catch (e) {
-                console.warn(`[DockerPulse] Failed to launch terminal ${term}:`, e);
-            }
-        }
-
-        if (!success) {
-            const escapeShellArg = (arg) => {
-                if (!arg) return "''";
-                if (/[ \t\n\r"'$&|<>*?~`;(){}]/.test(arg)) {
-                    return "'" + arg.replace(/'/g, "'\\''") + "'";
-                }
-                return arg;
-            };
-
-            let escapedCwd = escapeShellArg(workingDir);
-            let fullCommand = `cd ${escapedCwd} && ` + commandArgs.map(escapeShellArg).join(' ');
-
-            try {
-                if (typeof St !== 'undefined' && St.Clipboard) {
-                    const clipboard = St.Clipboard.get_default();
-                    clipboard.set_text(St.ClipboardType.CLIPBOARD, fullCommand);
-                    clipboard.set_text(St.ClipboardType.PRIMARY, fullCommand);
-                }
-            } catch (clipErr) {
-                console.error('[DockerPulse] Failed to write command to clipboard:', clipErr);
-            }
-
-            try {
-                let title = _("Terminal Launch Failed");
-                let body = _("The command has been copied to your clipboard. Paste and run it in your terminal.");
-
-                if (typeof Main !== 'undefined' && Main.messageTray) {
-                    const source = new MessageTray.Source("DockerPulse", "utilities-terminal-symbolic");
-                    Main.messageTray.add(source);
-                    const notification = new MessageTray.Notification(source, title, body);
-                    notification.setTransient(true);
-                    notification.addAction(_("Dismiss"), () => {
-                        notification.destroy();
-                    });
-                    source.showNotification(notification);
-                } else if (typeof Main !== 'undefined' && Main.notify) {
-                    Main.notify(title, body);
-                } else {
-                    console.log(`[DockerPulse] Notification: ${title} - ${body}`);
-                }
-            } catch (notifyErr) {
-                console.error('[DockerPulse] Failed to show terminal launch notification:', notifyErr);
             }
         }
     }
