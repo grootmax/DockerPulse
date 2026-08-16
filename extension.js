@@ -435,6 +435,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 });
             });
 
+            if (this._destroyed) {
+                return;
+            }
+
             if (result.success) {
                 let output = result.stdout ? result.stdout.trim() : '';
                 let containers = this._parseDockerComposePsOutput(output);
@@ -443,6 +447,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 
                 // Track health transition notifications & active containers count in a single background pass
                 let currentUnhealthy = new Set();
+                let newlyUnhealthy = [];
                 let active = 0;
                 let total = containers.length;
 
@@ -454,16 +459,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     if ((state === 'running' || state === 'up') && health === 'unhealthy') {
                         currentUnhealthy.add(name);
                         if (name && !this._unhealthyContainers.has(name)) {
-                            try {
-                                if (typeof Main !== 'undefined' && Main.notify) {
-                                    Main.notify("DockerPulse Warning", `Container ${name} is unhealthy!`);
-                                } else {
-                                    const uiMain = imports.ui.main;
-                                    uiMain.notify("DockerPulse Warning", `Container ${name} is unhealthy!`);
-                                }
-                            } catch (err) {
-                                console.error(`[DockerPulse] Failed to send notification for ${name}:`, err);
-                            }
+                            newlyUnhealthy.push(name);
                         }
                     }
 
@@ -472,6 +468,36 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     }
                 });
                 this._unhealthyContainers = currentUnhealthy;
+
+                // Dispatch notifications according to configured alert style preference
+                let alertStyle = getSettingString(this._settings, 'alert-style', 'individual');
+                if (alertStyle !== 'disabled' && newlyUnhealthy.length > 0) {
+                    const notifyUser = (title, message) => {
+                        try {
+                            if (typeof Main !== 'undefined' && Main.notify) {
+                                Main.notify(title, message);
+                            } else {
+                                const uiMain = imports.ui.main;
+                                uiMain.notify(title, message);
+                            }
+                        } catch (err) {
+                            console.error(`[DockerPulse] Failed to send notification:`, err);
+                        }
+                    };
+
+                    if (alertStyle === 'consolidated') {
+                        if (newlyUnhealthy.length === 1) {
+                            notifyUser("DockerPulse Warning", `Container ${newlyUnhealthy[0]} is unhealthy!`);
+                        } else {
+                            notifyUser("DockerPulse Warning", `Multiple containers are unhealthy: ${newlyUnhealthy.join(', ')}!`);
+                        }
+                    } else {
+                        // Default/individual style
+                        newlyUnhealthy.forEach(name => {
+                            notifyUser("DockerPulse Warning", `Container ${name} is unhealthy!`);
+                        });
+                    }
+                }
 
                 // Determine overall status
                 let status = 'grey';
@@ -788,6 +814,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        this._destroyed = true;
         this._stopEventStream();
         if (this._settings && this._settingsId) {
             this._settings.disconnect(this._settingsId);

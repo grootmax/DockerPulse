@@ -135,5 +135,38 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
                 console.error('[DockerPulse] Error saving show-container-count:', e);
             }
         });
+
+        let alertStyleRow = new Adw.ComboRow({
+            title: 'Alert Style',
+            subtitle: 'Configure how you are notified of container failures',
+            model: new Gtk.StringList({
+                strings: ['Individual Alerts', 'Consolidated Alerts', 'Muted']
+            }),
+        });
+        group.add(alertStyleRow);
+
+        let currentStyle = settings.get_string('alert-style') || 'individual';
+        let initialIndex = 0;
+        if (currentStyle === 'consolidated') {
+            initialIndex = 1;
+        } else if (currentStyle === 'disabled') {
+            initialIndex = 2;
+        }
+        alertStyleRow.selected = initialIndex;
+
+        alertStyleRow.connect('notify::selected', () => {
+            let index = alertStyleRow.selected;
+            let style = 'individual';
+            if (index === 1) {
+                style = 'consolidated';
+            } else if (index === 2) {
+                style = 'disabled';
+            }
+            try {
+                settings.set_string('alert-style', style);
+            } catch (e) {
+                console.error('[DockerPulse] Error saving alert-style:', e);
+            }
+        });
     }
 }

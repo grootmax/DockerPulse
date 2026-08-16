@@ -21,5 +21,10 @@
       <summary>Show Container Count</summary>
       <description>Toggle visibility of the container count in the top status bar.</description>
     </key>
+    <key name="alert-style" type="s">
+      <default>'individual'</default>
+      <summary>Alert Style</summary>
+      <description>Configure how you are notified of container failures (individual, consolidated, or disabled).</description>
+    </key>
   </schema>
 </schemalist>
