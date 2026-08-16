@@ -581,11 +581,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(emptyItem);
         } else {
             this._state.containers.forEach(item => {
+                if (!item) return;
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
+                let health = '';
                 if (item.Health !== undefined && item.Health !== null) {
                     health = String(item.Health).toLowerCase();
                 } else if (item.health !== undefined && item.health !== null) {
@@ -595,7 +597,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let stateEmoji = '⚪';
                 let healthLabel = '';
                 let displayStatus = status;
-                let healthLabel = '';
 
                 if (state === 'running' || state === 'up') {
                     if (health === 'starting') {
@@ -619,7 +620,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
                 // Submenu for each container containing actions
                 let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    stateEmoji + ' ' + name + ' (' + displayStatus + ')'
+                    stateEmoji + ' ' + name + ' (' + displayStatus + ')' + healthLabel
                 );
 
                 // Quick Actions for Container

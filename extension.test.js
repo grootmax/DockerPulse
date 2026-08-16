@@ -144,6 +144,26 @@ jest.unstable_mockModule('gi://Gio', () => {
                     return new MockSubprocess(argv);
                 }
             },
+            Subprocess: class {
+                constructor(config) {
+                    this.argv = config ? config.argv : [];
+                    this.flags = config ? config.flags : 0;
+                }
+                static new(argv, flags) {
+                    const proc = new this();
+                    proc.argv = argv;
+                    proc.flags = flags;
+                    return proc;
+                }
+                init() {}
+                wait_async(cancellable, callback) {
+                    process.nextTick(() => {
+                        callback(this, 'dummy-res');
+                    });
+                }
+                wait_finish() {}
+                force_exit() {}
+            },
             SubprocessFlags: {
                 STDOUT_PIPE: 1,
                 STDERR_PIPE: 2,
@@ -293,6 +313,13 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             { name: 'c2', state: 'running', health: 'healthy' },
             { name: 'c3', state: 'exited' }
         ];
+        indicator._state = {
+            containers: indicator._cachedContainers,
+            status: 'yellow',
+            projectName: 'my-project',
+            activeCount: 2,
+            totalCount: 3
+        };
 
         indicator._updateUI();
 
@@ -314,6 +341,13 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             null, // completely null item which might trigger errors
             { name: 'bad-container' } // missing state
         ];
+        indicator._state = {
+            containers: indicator._cachedContainers,
+            status: 'yellow',
+            projectName: 'my-project',
+            activeCount: 1,
+            totalCount: 4
+        };
 
         // Should execute without throwing any exceptions
         expect(() => {
@@ -338,6 +372,13 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         indicator._cachedContainers = [
             { name: 'stopped-container', state: 'exited', status: 'exited' }
         ];
+        indicator._state = {
+            containers: indicator._cachedContainers,
+            status: 'yellow',
+            projectName: 'my-project',
+            activeCount: 0,
+            totalCount: 1
+        };
 
         indicator._buildMenu();
 
