@@ -21,5 +21,45 @@
       <summary>Show Container Count</summary>
       <description>Toggle visibility of the container count in the top status bar.</description>
     </key>
+    <key name="custom-host" type="s">
+      <default>''</default>
+      <summary>Custom Docker Host</summary>
+      <description>Custom DOCKER_HOST connection parameter override.</description>
+    </key>
+    <key name="custom-cert-path" type="s">
+      <default>''</default>
+      <summary>Custom Cert Path</summary>
+      <description>Custom DOCKER_CERT_PATH directory path override.</description>
+    </key>
+    <key name="custom-tls-verify" type="b">
+      <default>false</default>
+      <summary>Custom TLS Verify</summary>
+      <description>Toggle DOCKER_TLS_VERIFY (1 or 0) override.</description>
+    </key>
+    <key name="diagnostic-status" type="s">
+      <default>''</default>
+      <summary>Diagnostic Status</summary>
+      <description>Connection diagnostic status ('connected', 'error', 'resolving').</description>
+    </key>
+    <key name="diagnostic-error" type="s">
+      <default>''</default>
+      <summary>Diagnostic Error</summary>
+      <description>Latest diagnostic error or feedback message.</description>
+    </key>
+    <key name="diagnostic-resolved-host" type="s">
+      <default>''</default>
+      <summary>Diagnostic Resolved Host</summary>
+      <description>The currently resolved active Docker Host.</description>
+    </key>
+    <key name="diagnostic-resolved-cert-path" type="s">
+      <default>''</default>
+      <summary>Diagnostic Resolved Cert Path</summary>
+      <description>The currently resolved active Cert Path.</description>
+    </key>
+    <key name="diagnostic-resolved-tls-verify" type="s">
+      <default>''</default>
+      <summary>Diagnostic Resolved TLS Verify</summary>
+      <description>The currently resolved active TLS Verify string.</description>
+    </key>
   </schema>
 </schemalist>

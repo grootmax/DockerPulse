@@ -41,6 +41,28 @@ function getSettingBool(settings, key, fallback) {
     }
 }
 
+function getSafeEnviron() {
+    if (GLib && typeof GLib.get_environ === 'function') {
+        try {
+            return GLib.get_environ();
+        } catch (e) {}
+    }
+    return [];
+}
+
+function setEnvironVar(env, key, value) {
+    if (GLib && typeof GLib.environ_setenv === 'function') {
+        try {
+            return GLib.environ_setenv(env, key, value, true);
+        } catch (e) {}
+    }
+    // Fallback for mock environments
+    let prefix = key + '=';
+    let filtered = env.filter(item => !item.startsWith(prefix));
+    filtered.push(prefix + value);
+    return filtered;
+}
+
 const DockerPulseIndicator = GObject.registerClass(
 class DockerPulseIndicator extends PanelMenu.Button {
     _init(extension) {
@@ -95,7 +117,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
         // Watch settings changes
         if (this._settings) {
-            this._settingsId = this._settings.connect('changed', () => {
+            this._settingsId = this._settings.connect('changed', (settings, key) => {
+                if (key && key.startsWith('diagnostic-')) {
+                    return;
+                }
                 this._onSettingsChanged();
             });
         }
@@ -124,6 +149,15 @@ class DockerPulseIndicator extends PanelMenu.Button {
             }
             // Start event stream
             this._startEventStream();
+
+            // Trigger background environment discovery and diagnostics
+            this._discoverAndValidateEnvironment().then(() => {
+                this._stopEventStream();
+                this._startEventStream();
+                this._refreshState();
+            }).catch(e => {
+                console.error('[DockerPulse] Environment discovery error:', e);
+            });
         } else {
             this._cachedProjectName = '';
             this._cachedContainers = [];
@@ -139,6 +173,148 @@ class DockerPulseIndicator extends PanelMenu.Button {
         }
         
         this._refreshState();
+    }
+
+    async _discoverAndValidateEnvironment() {
+        let customHost = getSettingString(this._settings, 'custom-host', '');
+        let customCertPath = getSettingString(this._settings, 'custom-cert-path', '');
+        let customTlsVerify = getSettingBool(this._settings, 'custom-tls-verify', false);
+
+        let resolvedHost = '';
+        let resolvedCertPath = '';
+        let resolvedTlsVerify = '';
+
+        if (customHost) {
+            resolvedHost = customHost;
+            resolvedCertPath = customCertPath;
+            resolvedTlsVerify = customTlsVerify ? '1' : '';
+        } else {
+            // Attempt Background Shell Discovery
+            let shellHost = '';
+            let shellCertPath = '';
+            let shellTlsVerify = '';
+            try {
+                let launcher = new Gio.SubprocessLauncher({
+                    flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                });
+                let proc = launcher.spawnv(['bash', '-l', '-c', 'env']);
+                let res = await new Promise((resolve, reject) => {
+                    proc.communicate_utf8_async(null, null, (obj, r) => {
+                        try {
+                            let [success, stdout, stderr] = obj.communicate_utf8_finish(r);
+                            resolve({ success, stdout, stderr });
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
+                });
+                if (res.success && res.stdout) {
+                    let lines = res.stdout.split('\n');
+                    for (let line of lines) {
+                        let trimLine = line.trim();
+                        if (trimLine.startsWith('DOCKER_HOST=')) {
+                            shellHost = trimLine.substring('DOCKER_HOST='.length);
+                        } else if (trimLine.startsWith('DOCKER_CERT_PATH=')) {
+                            shellCertPath = trimLine.substring('DOCKER_CERT_PATH='.length);
+                        } else if (trimLine.startsWith('DOCKER_TLS_VERIFY=')) {
+                            shellTlsVerify = trimLine.substring('DOCKER_TLS_VERIFY='.length);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('[DockerPulse] Shell env discovery failed:', e);
+            }
+
+            if (shellHost) {
+                resolvedHost = shellHost;
+                resolvedCertPath = shellCertPath;
+                resolvedTlsVerify = shellTlsVerify;
+            } else {
+                // Attempt Rootless socket auto-discovery in user directories
+                let socketPath = '';
+                let runtimeSock = GLib.get_user_runtime_dir() + '/docker.sock';
+                let homeSock1 = GLib.get_home_dir() + '/.docker/run/docker.sock';
+                let homeSock2 = GLib.get_home_dir() + '/.docker/desktop/docker.sock';
+
+                let checkFileExists = (path) => {
+                    try {
+                        let file = Gio.File.new_for_path(path);
+                        return file.query_exists(null);
+                    } catch (e) {
+                        return false;
+                    }
+                };
+
+                if (checkFileExists(runtimeSock)) {
+                    socketPath = 'unix://' + runtimeSock;
+                } else if (checkFileExists(homeSock1)) {
+                    socketPath = 'unix://' + homeSock1;
+                } else if (checkFileExists(homeSock2)) {
+                    socketPath = 'unix://' + homeSock2;
+                }
+
+                if (socketPath) {
+                    resolvedHost = socketPath;
+                    resolvedCertPath = '';
+                    resolvedTlsVerify = '';
+                }
+            }
+        }
+
+        this._resolvedHost = resolvedHost;
+        this._resolvedCertPath = resolvedCertPath;
+        this._resolvedTlsVerify = resolvedTlsVerify;
+
+        // Perform connection validation
+        let status = 'error';
+        let errorMsg = 'Docker daemon unreachable.';
+        try {
+            let testLauncher = new Gio.SubprocessLauncher({
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            });
+            let testEnv = getSafeEnviron();
+            if (resolvedHost) testEnv = setEnvironVar(testEnv, 'DOCKER_HOST', resolvedHost);
+            if (resolvedCertPath) testEnv = setEnvironVar(testEnv, 'DOCKER_CERT_PATH', resolvedCertPath);
+            if (resolvedTlsVerify) testEnv = setEnvironVar(testEnv, 'DOCKER_TLS_VERIFY', resolvedTlsVerify);
+            if (typeof testLauncher.set_environ === 'function') {
+                testLauncher.set_environ(testEnv);
+            }
+
+            let testProc = testLauncher.spawnv(['docker', 'info']);
+            let testRes = await new Promise((resolve, reject) => {
+                testProc.communicate_utf8_async(null, null, (obj, r) => {
+                    try {
+                        let [success, stdout, stderr] = obj.communicate_utf8_finish(r);
+                        resolve({ success, stdout, stderr });
+                    } catch (e) {
+                        reject(e);
+                    }
+                });
+            });
+
+            if (testRes.success) {
+                status = 'connected';
+                errorMsg = 'Connected and validated successfully.';
+            } else {
+                status = 'error';
+                errorMsg = testRes.stderr ? testRes.stderr.trim() : 'Docker daemon unreachable.';
+            }
+        } catch (e) {
+            status = 'error';
+            errorMsg = e.message || 'Failed to spawn validation command.';
+        }
+
+        if (this._settings && typeof this._settings.set_string === 'function') {
+            try {
+                this._settings.set_string('diagnostic-status', status);
+                this._settings.set_string('diagnostic-error', errorMsg);
+                this._settings.set_string('diagnostic-resolved-host', resolvedHost || 'None (System Default)');
+                this._settings.set_string('diagnostic-resolved-cert-path', resolvedCertPath || 'None');
+                this._settings.set_string('diagnostic-resolved-tls-verify', resolvedTlsVerify || 'None');
+            } catch (err) {
+                console.error('[DockerPulse] Failed to write diagnostics back to GSettings:', err);
+            }
+        }
     }
 
     _updatePollTimer(customInterval) {
@@ -202,6 +378,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             });
             launcher.set_cwd(this._projectPath);
+            let env = getSafeEnviron();
+            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
+            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
+            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            if (typeof launcher.set_environ === 'function') {
+                launcher.set_environ(env);
+            }
             
             // Get current parent PID and path to wrapper
             let parentPid = GLib.get_pid().toString();
@@ -417,6 +600,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             });
             launcher.set_cwd(this._projectPath);
+            let env = getSafeEnviron();
+            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
+            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
+            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            if (typeof launcher.set_environ === 'function') {
+                launcher.set_environ(env);
+            }
             // Run docker compose ps -a --format json
             let argv = ['docker', 'compose', 'ps', '-a', '--format', 'json'];
             let proc = launcher.spawnv(argv);
@@ -720,6 +910,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 flags: Gio.SubprocessFlags.NONE,
             });
             launcher.set_cwd(this._projectPath);
+            let env = getSafeEnviron();
+            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
+            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
+            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            if (typeof launcher.set_environ === 'function') {
+                launcher.set_environ(env);
+            }
             let proc = launcher.spawnv(argv);
             
             // Wait for the stack action process to complete asynchronously (non-blocking)
@@ -768,17 +965,31 @@ class DockerPulseIndicator extends PanelMenu.Button {
             '-e', commandArgs.join(' '),
         ];
 
+        let spawnWithEnv = (args) => {
+            let launcher = new Gio.SubprocessLauncher({
+                flags: Gio.SubprocessFlags.NONE,
+            });
+            let env = getSafeEnviron();
+            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
+            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
+            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            if (typeof launcher.set_environ === 'function') {
+                launcher.set_environ(env);
+            }
+            return launcher.spawnv(args);
+        };
+
         try {
-            Gio.Subprocess.new(ptyxisArgs, Gio.SubprocessFlags.NONE);
+            spawnWithEnv(ptyxisArgs);
         } catch (e1) {
             try {
-                Gio.Subprocess.new(gnomeTerminalArgs, Gio.SubprocessFlags.NONE);
+                spawnWithEnv(gnomeTerminalArgs);
             } catch (e2) {
                 try {
-                    Gio.Subprocess.new(kgxArgs, Gio.SubprocessFlags.NONE);
+                    spawnWithEnv(kgxArgs);
                 } catch (e3) {
                     try {
-                        Gio.Subprocess.new(xtermArgs, Gio.SubprocessFlags.NONE);
+                        spawnWithEnv(xtermArgs);
                     } catch (e4) {
                         console.error('[DockerPulse] Could not spawn terminal:', e4);
                     }
