@@ -357,6 +357,46 @@ class DockerPulseIndicator extends PanelMenu.Button {
         return false;
     }
 
+    get _cachedContainers() {
+        return this._state ? this._state.containers : [];
+    }
+
+    set _cachedContainers(containers) {
+        let active = 0;
+        let total = 0;
+        if (Array.isArray(containers)) {
+            containers.forEach(item => {
+                if (item) {
+                    total++;
+                    if (this._isContainerActive(item)) {
+                        active++;
+                    }
+                }
+            });
+        }
+        this._state = Object.freeze({
+            containers: containers || [],
+            status: this._state ? this._state.status : 'grey',
+            projectName: this._state ? this._state.projectName : '',
+            activeCount: active,
+            totalCount: total
+        });
+    }
+
+    get _cachedStatus() {
+        return this._state ? this._state.status : 'grey';
+    }
+
+    set _cachedStatus(status) {
+        this._state = Object.freeze({
+            containers: this._state ? this._state.containers : [],
+            status: status,
+            projectName: this._state ? this._state.projectName : '',
+            activeCount: this._state ? this._state.activeCount : 0,
+            totalCount: this._state ? this._state.totalCount : 0
+        });
+    }
+
     async _refreshState() {
         if (!this._projectPath) {
             this._cachedContainers = [];
@@ -581,11 +621,13 @@ class DockerPulseIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(emptyItem);
         } else {
             this._state.containers.forEach(item => {
+                if (!item) return;
                 let name = item.Name || item.name || 'container';
                 let service = item.Service || item.service || name;
                 let state = (item.State || item.state || '').toLowerCase();
                 let status = item.Status || item.status || state;
 
+                let health = '';
                 if (item.Health !== undefined && item.Health !== null) {
                     health = String(item.Health).toLowerCase();
                 } else if (item.health !== undefined && item.health !== null) {
@@ -595,7 +637,6 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let stateEmoji = '⚪';
                 let healthLabel = '';
                 let displayStatus = status;
-                let healthLabel = '';
 
                 if (state === 'running' || state === 'up') {
                     if (health === 'starting') {
@@ -619,7 +660,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
                 // Submenu for each container containing actions
                 let containerSubMenu = new PopupMenu.PopupSubMenuMenuItem(
-                    stateEmoji + ' ' + name + ' (' + displayStatus + ')'
+                    stateEmoji + ' ' + name + ' (' + displayStatus + ')' + healthLabel
                 );
 
                 // Quick Actions for Container
@@ -703,7 +744,12 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _spawnTerminalCommand(commandArgs) {
         if (!this._projectPath) return;
 
-        // Try gnome-terminal, fallback to kgx (Console), fallback to xterm
+        let ptyxisArgs = [
+            'ptyxis',
+            '--working-directory', this._projectPath,
+            '-e', commandArgs.join(' '),
+        ];
+
         let gnomeTerminalArgs = [
             'gnome-terminal',
             `--working-directory=${this._projectPath}`,
@@ -723,18 +769,19 @@ class DockerPulseIndicator extends PanelMenu.Button {
         ];
 
         try {
-            let proc = Gio.Subprocess.new(gnomeTerminalArgs, Gio.SubprocessFlags.NONE);
-            proc.init(null);
-        } catch (e) {
+            Gio.Subprocess.new(ptyxisArgs, Gio.SubprocessFlags.NONE);
+        } catch (e1) {
             try {
-                let proc = Gio.Subprocess.new(kgxArgs, Gio.SubprocessFlags.NONE);
-                proc.init(null);
+                Gio.Subprocess.new(gnomeTerminalArgs, Gio.SubprocessFlags.NONE);
             } catch (e2) {
                 try {
-                    let proc = Gio.Subprocess.new(xtermArgs, Gio.SubprocessFlags.NONE);
-                    proc.init(null);
+                    Gio.Subprocess.new(kgxArgs, Gio.SubprocessFlags.NONE);
                 } catch (e3) {
-                    console.error('[DockerPulse] Could not spawn terminal:', e3);
+                    try {
+                        Gio.Subprocess.new(xtermArgs, Gio.SubprocessFlags.NONE);
+                    } catch (e4) {
+                        console.error('[DockerPulse] Could not spawn terminal:', e4);
+                    }
                 }
             }
         }
