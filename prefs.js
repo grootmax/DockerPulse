@@ -136,37 +136,39 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
             }
         });
 
-        let alertStyleRow = new Adw.ComboRow({
-            title: 'Alert Style',
-            subtitle: 'Configure how you are notified of container failures',
-            model: new Gtk.StringList({
-                strings: ['Individual Alerts', 'Consolidated Alerts', 'Muted']
-            }),
+        const terminalValues = ['auto', 'ptyxis', 'kgx', 'gnome-terminal', 'xterm'];
+        let comboRow = new Adw.ComboRow({
+            title: 'Terminal Emulator',
+            subtitle: 'Preferred terminal emulator to use when opening container shells or logs',
         });
-        group.add(alertStyleRow);
+        let model = Gtk.StringList.new([
+            'Automatic',
+            'Ptyxis',
+            'GNOME Console',
+            'gnome-terminal',
+            'xterm'
+        ]);
+        comboRow.model = model;
 
-        let currentStyle = settings.get_string('alert-style') || 'individual';
-        let initialIndex = 0;
-        if (currentStyle === 'consolidated') {
-            initialIndex = 1;
-        } else if (currentStyle === 'disabled') {
-            initialIndex = 2;
+        try {
+            let currentValue = settings.get_string('terminal-emulator') || 'auto';
+            let index = terminalValues.indexOf(currentValue);
+            if (index === -1) index = 0;
+            comboRow.selected = index;
+        } catch (e) {
+            console.error('[DockerPulse] Error setting initial terminal value:', e);
         }
-        alertStyleRow.selected = initialIndex;
 
-        alertStyleRow.connect('notify::selected', () => {
-            let index = alertStyleRow.selected;
-            let style = 'individual';
-            if (index === 1) {
-                style = 'consolidated';
-            } else if (index === 2) {
-                style = 'disabled';
-            }
+        comboRow.connect('notify::selected', () => {
             try {
-                settings.set_string('alert-style', style);
+                let selectedIndex = comboRow.selected;
+                if (selectedIndex >= 0 && selectedIndex < terminalValues.length) {
+                    settings.set_string('terminal-emulator', terminalValues[selectedIndex]);
+                }
             } catch (e) {
-                console.error('[DockerPulse] Error saving alert-style:', e);
+                console.error('[DockerPulse] Error saving terminal-emulator:', e);
             }
         });
+        group.add(comboRow);
     }
 }

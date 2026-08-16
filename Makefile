@@ -2,12 +2,20 @@ UUID = dockerpulse@github.com
 EXT_DIR = $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 STAGE_DIR = build_staging
 
-.PHONY: all compile install clean
+.PHONY: all compile install clean validate
 
 all: compile
 
 compile:
 	glib-compile-schemas schemas/
+
+validate:
+	@echo "Running ESLint verification..."
+	npx eslint .
+	@echo "Running Type checking..."
+	npx tsc --project jsconfig.json
+	@echo "Running Unit tests..."
+	npm test
 
 install:
 	@echo "Staging files..."

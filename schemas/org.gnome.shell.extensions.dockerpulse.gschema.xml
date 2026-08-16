@@ -21,10 +21,10 @@
       <summary>Show Container Count</summary>
       <description>Toggle visibility of the container count in the top status bar.</description>
     </key>
-    <key name="alert-style" type="s">
-      <default>'individual'</default>
-      <summary>Alert Style</summary>
-      <description>Configure how you are notified of container failures (individual, consolidated, or disabled).</description>
+    <key name="terminal-emulator" type="s">
+      <default>'auto'</default>
+      <summary>Terminal Emulator</summary>
+      <description>Preferred terminal emulator to use when opening container shells or logs.</description>
     </key>
   </schema>
 </schemalist>
