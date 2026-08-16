@@ -1,15 +1,22 @@
 name: Auto PR Manager
 
 on:
+  # Process PRs when they are created or updated.
   pull_request_target:
     types:
       - opened
       - reopened
       - synchronize
 
+  # Important:
+  # GitHub does not trigger normal pull_request workflows for
+  # PRs that have merge conflicts.
+  # This scheduled run allows us to detect and process them.
   schedule:
     - cron: "*/5 * * * *"
 
+  # Allows manual execution from:
+  # Actions → Auto PR Manager → Run workflow
   workflow_dispatch:
 
 permissions:
@@ -18,6 +25,7 @@ permissions:
 
 jobs:
   process-prs:
+    name: Process Pull Requests
     runs-on: ubuntu-latest
 
     steps:
@@ -25,23 +33,38 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+
         run: |
           set -euo pipefail
 
           echo "======================================"
-          echo "       Auto PR Manager"
+          echo "          Auto PR Manager"
           echo "======================================"
+          echo ""
+
+          # --------------------------------------------------
+          # Get all open PRs
+          # --------------------------------------------------
+
+          echo "Checking open PRs..."
 
           gh pr list \
             --repo "$GH_REPO" \
             --state open \
-            --json number,title,headRefName,baseRefName,isDraft \
-            --limit 100 > /tmp/prs.json
+            --json number,title,headRefName,baseRefName,isDraft,createdAt \
+            --limit 100 |
+            jq 'sort_by(.createdAt)' > /tmp/prs.json
 
+          echo ""
+          echo "Open PRs:"
           cat /tmp/prs.json
 
           echo ""
           echo "Processing pull requests..."
+
+          # --------------------------------------------------
+          # Process PRs oldest first
+          # --------------------------------------------------
 
           jq -c '.[]' /tmp/prs.json | while read -r PR; do
 
@@ -53,40 +76,94 @@ jobs:
 
             echo ""
             echo "--------------------------------------"
-            echo "PR #$PR_NUMBER: $TITLE"
-            echo "HEAD: $HEAD_BRANCH"
-            echo "BASE: $BASE_BRANCH"
-            echo "DRAFT: $IS_DRAFT"
+            echo "PR #$PR_NUMBER"
+            echo "Title : $TITLE"
+            echo "Head  : $HEAD_BRANCH"
+            echo "Base  : $BASE_BRANCH"
+            echo "Draft : $IS_DRAFT"
             echo "--------------------------------------"
 
+            # ------------------------------------------------
+            # Skip draft PRs
+            # ------------------------------------------------
+
             if [ "$IS_DRAFT" = "true" ]; then
-              echo "Skipping draft PR #$PR_NUMBER"
+              echo "PR #$PR_NUMBER is a draft."
+              echo "Skipping."
               continue
             fi
 
-            MERGEABLE=$(gh pr view "$PR_NUMBER" \
-              --repo "$GH_REPO" \
-              --json mergeable \
-              --jq '.mergeable')
+            # ------------------------------------------------
+            # Check mergeability
+            #
+            # GitHub may initially return UNKNOWN because
+            # mergeability is calculated asynchronously.
+            # ------------------------------------------------
 
-            echo "Mergeable status: $MERGEABLE"
+            echo ""
+            echo "Checking mergeability..."
 
-            # GitHub can temporarily return UNKNOWN while calculating mergeability.
+            MERGEABLE="UNKNOWN"
+
+            for ATTEMPT in 1 2 3 4 5; do
+
+              MERGEABLE=$(gh pr view "$PR_NUMBER" \
+                --repo "$GH_REPO" \
+                --json mergeable \
+                --jq '.mergeable')
+
+              echo "Attempt $ATTEMPT: mergeable=$MERGEABLE"
+
+              if [ "$MERGEABLE" != "UNKNOWN" ]; then
+                break
+              fi
+
+              if [ "$ATTEMPT" -lt 5 ]; then
+                echo "GitHub is still calculating mergeability."
+                echo "Waiting 15 seconds..."
+                sleep 15
+              fi
+
+            done
+
+            # ------------------------------------------------
+            # Still UNKNOWN
+            # ------------------------------------------------
+
             if [ "$MERGEABLE" = "UNKNOWN" ]; then
-              echo "Mergeability is still being calculated."
+              echo ""
+              echo "GitHub has not finished calculating mergeability."
+              echo "Leaving PR #$PR_NUMBER for the next run."
               continue
             fi
 
-            # -------------------------------------------------
-            # CASE 1: PR has conflicts
-            # -------------------------------------------------
+            # ==================================================
+            # CASE 1: PR HAS CONFLICTS
+            # ==================================================
 
             if [ "$MERGEABLE" = "CONFLICTING" ]; then
 
-              echo "PR #$PR_NUMBER has conflicts."
-              echo "Attempting automatic conflict resolution..."
+              echo ""
+              echo "======================================"
+              echo "PR #$PR_NUMBER has conflicts"
+              echo "======================================"
+              echo ""
+
+              echo "Head branch : $HEAD_BRANCH"
+              echo "Base branch : $BASE_BRANCH"
+              echo ""
 
               WORKDIR=$(mktemp -d)
+
+              echo "Temporary working directory:"
+              echo "$WORKDIR"
+
+              # ------------------------------------------------
+              # Clone repository
+              # ------------------------------------------------
+
+              echo ""
+              echo "Cloning repository..."
 
               git clone \
                 "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
@@ -94,85 +171,315 @@ jobs:
 
               cd "$WORKDIR"
 
+              # ------------------------------------------------
+              # Configure Git identity
+              # ------------------------------------------------
+
               git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+              git config user.email \
+                "41898282+github-actions[bot]@users.noreply.github.com"
+
+              # ------------------------------------------------
+              # Fetch both branches
+              # ------------------------------------------------
+
+              echo ""
+              echo "Fetching branches..."
 
               git fetch origin "$BASE_BRANCH"
               git fetch origin "$HEAD_BRANCH"
 
-              git checkout -B "$HEAD_BRANCH" "origin/$HEAD_BRANCH"
+              # ------------------------------------------------
+              # Checkout PR branch
+              # ------------------------------------------------
 
-              echo "Merging origin/$BASE_BRANCH into $HEAD_BRANCH..."
+              echo ""
+              echo "Checking out PR branch..."
 
-              if git merge --no-edit "origin/$BASE_BRANCH"; then
+              git checkout -B \
+                "$HEAD_BRANCH" \
+                "origin/$HEAD_BRANCH"
 
-                echo "No conflicts occurred during merge."
-                git push origin "$HEAD_BRANCH"
+              # ------------------------------------------------
+              # Merge base branch into PR branch
+              #
+              # Example:
+              #
+              # main
+              #   ↓
+              # Jules branch
+              #
+              # This reproduces the normal process of bringing
+              # the target branch into the PR branch.
+              # ------------------------------------------------
+
+              echo ""
+              echo "Merging base branch into PR branch..."
+
+              if git merge \
+                --no-edit \
+                "origin/$BASE_BRANCH"; then
+
+                echo ""
+                echo "Merge completed without conflicts."
 
               else
 
+                echo ""
                 echo "Conflicts detected."
+                echo ""
                 echo "Accepting incoming/base branch changes."
+                echo ""
 
-                # Resolve all conflicted files using the incoming side.
-                git diff --name-only --diff-filter=U | while read -r FILE; do
-                  echo "Resolving: $FILE"
+                # ------------------------------------------------
+                # Show conflicted files
+                # ------------------------------------------------
+
+                echo "Conflicted files:"
+
+                git diff \
+                  --name-only \
+                  --diff-filter=U
+
+                echo ""
+
+                # ------------------------------------------------
+                # Resolve every conflict using THEIRS
+                #
+                # Because we are currently on the PR branch
+                # and merging main INTO the PR branch:
+                #
+                # ours   = Jules PR branch
+                # theirs = main/base branch
+                #
+                # Therefore --theirs corresponds to accepting
+                # the incoming/main change.
+                # ------------------------------------------------
+
+                git diff \
+                  --name-only \
+                  --diff-filter=U |
+                while IFS= read -r FILE; do
+
+                  echo "Resolving conflict: $FILE"
+
                   git checkout --theirs -- "$FILE"
+
                   git add -- "$FILE"
+
                 done
+
+                # ------------------------------------------------
+                # Make sure there are no unresolved conflicts
+                # ------------------------------------------------
+
+                REMAINING_CONFLICTS=$(git diff \
+                  --name-only \
+                  --diff-filter=U |
+                  wc -l)
+
+                if [ "$REMAINING_CONFLICTS" -ne 0 ]; then
+
+                  echo ""
+                  echo "ERROR: Unresolved conflicts remain."
+                  echo "PR #$PR_NUMBER will NOT be modified further."
+
+                  git merge --abort || true
+
+                  cd /
+                  rm -rf "$WORKDIR"
+
+                  continue
+                fi
+
+                # ------------------------------------------------
+                # Commit resolution
+                # ------------------------------------------------
+
+                echo ""
+                echo "Committing conflict resolution..."
 
                 git commit \
                   -m "chore: auto-resolve merge conflicts"
 
-                git push origin "$HEAD_BRANCH"
-
-                echo "Conflict resolution pushed successfully."
+                echo ""
+                echo "Conflict resolution committed."
 
               fi
 
+              # ------------------------------------------------
+              # Push updated PR branch
+              # ------------------------------------------------
+
+              echo ""
+              echo "Pushing updated branch..."
+
+              git push origin "$HEAD_BRANCH"
+
+              echo ""
+              echo "Conflict resolution pushed successfully."
+
               cd /
+
               rm -rf "$WORKDIR"
 
-              echo "PR #$PR_NUMBER has been updated."
+              echo ""
+              echo "======================================"
+              echo "PR #$PR_NUMBER updated"
+              echo "======================================"
+              echo ""
+              echo "GitHub will recalculate mergeability."
+              echo "The PR will be processed again on the next run."
+
               continue
             fi
 
-            # -------------------------------------------------
-            # CASE 2: PR is already mergeable
-            # -------------------------------------------------
+            # ==================================================
+            # CASE 2: PR IS ALREADY MERGEABLE
+            # ==================================================
 
             if [ "$MERGEABLE" = "MERGEABLE" ]; then
 
-              echo "PR #$PR_NUMBER is mergeable."
+              echo ""
+              echo "======================================"
+              echo "PR #$PR_NUMBER is mergeable"
+              echo "======================================"
 
+              # ------------------------------------------------
+              # Check required status checks
+              #
+              # IMPORTANT:
+              # A repository may have no CI checks at all.
+              # In that case gh pr checks returns no checks.
+              # We treat that as OK.
+              # ------------------------------------------------
+
+              echo ""
               echo "Checking required status checks..."
 
-              CHECKS=$(gh pr checks "$PR_NUMBER" \
-                --repo "$GH_REPO" \
-                --json name,state \
-                --jq '[.[] | select(.state != "SUCCESS" and .state != "SKIPPED")] | length')
+              CHECK_OUTPUT=$(
+                gh pr checks "$PR_NUMBER" \
+                  --repo "$GH_REPO" \
+                  --required \
+                  --json name,state,bucket \
+                  2>/dev/null || true
+              )
 
-              if [ "$CHECKS" != "0" ]; then
-                echo "Required checks are still running or have failed."
-                echo "Skipping PR #$PR_NUMBER for now."
-                continue
+              # ------------------------------------------------
+              # No checks configured
+              # ------------------------------------------------
+
+              if [ -z "$CHECK_OUTPUT" ] || [ "$CHECK_OUTPUT" = "[]" ]; then
+
+                echo ""
+                echo "No required checks are configured."
+                echo "Proceeding with merge."
+
+              else
+
+                echo ""
+                echo "Required checks:"
+                echo "$CHECK_OUTPUT"
+
+                # ----------------------------------------------
+                # Check failed checks
+                # ----------------------------------------------
+
+                FAILED_CHECKS=$(echo "$CHECK_OUTPUT" |
+                  jq '
+                    [
+                      .[]
+                      | select(
+                          .bucket == "fail"
+                          or .bucket == "cancel"
+                        )
+                    ]
+                    | length
+                  ')
+
+                # ----------------------------------------------
+                # Check pending checks
+                # ----------------------------------------------
+
+                PENDING_CHECKS=$(echo "$CHECK_OUTPUT" |
+                  jq '
+                    [
+                      .[]
+                      | select(.bucket == "pending")
+                    ]
+                    | length
+                  ')
+
+                # ----------------------------------------------
+                # Failed
+                # ----------------------------------------------
+
+                if [ "$FAILED_CHECKS" -gt 0 ]; then
+
+                  echo ""
+                  echo "Required checks have failed."
+                  echo "PR #$PR_NUMBER will NOT be merged."
+
+                  continue
+                fi
+
+                # ----------------------------------------------
+                # Pending
+                # ----------------------------------------------
+
+                if [ "$PENDING_CHECKS" -gt 0 ]; then
+
+                  echo ""
+                  echo "Required checks are still running."
+                  echo "PR #$PR_NUMBER will be checked again later."
+
+                  continue
+                fi
+
+                echo ""
+                echo "All required checks passed."
+
               fi
 
-              echo "All checks passed."
+              # ------------------------------------------------
+              # Merge PR
+              # ------------------------------------------------
 
+              echo ""
               echo "Merging PR #$PR_NUMBER..."
 
-              gh pr merge "$PR_NUMBER" \
+              if gh pr merge "$PR_NUMBER" \
                 --repo "$GH_REPO" \
                 --merge \
-                --delete-branch
+                --delete-branch; then
 
-              echo "PR #$PR_NUMBER merged successfully."
+                echo ""
+                echo "======================================"
+                echo "PR #$PR_NUMBER merged successfully"
+                echo "======================================"
+
+              else
+
+                echo ""
+                echo "Unable to merge PR #$PR_NUMBER."
+                echo "It may be blocked by branch protection,"
+                echo "required reviews, or another GitHub rule."
+
+              fi
 
               continue
             fi
 
-            echo "Unknown mergeability state: $MERGEABLE"
+            # ==================================================
+            # UNKNOWN / UNEXPECTED STATE
+            # ==================================================
+
+            echo ""
+            echo "Unhandled mergeability state:"
+            echo "$MERGEABLE"
+
+            echo "PR #$PR_NUMBER will be checked again later."
 
           done
 
