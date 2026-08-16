@@ -1,8 +1,12 @@
 // Test suite for DockerPulse logical units
 import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Helper to extract method bodies from extension.js to test them without running GJS
-const code = readFileSync('/app/extension.js', 'utf8');
+const code = readFileSync(join(__dirname, 'extension.js'), 'utf8');
 
 function extractMethod(code, methodName) {
     const regex = new RegExp(`\\s${methodName}\\([^)]*\\)\\s*\\{`);
