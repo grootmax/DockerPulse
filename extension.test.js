@@ -1,5 +1,17 @@
 import { jest } from '@jest/globals';
 
+let sentNotifications = [];
+
+globalThis.imports = {
+    ui: {
+        main: {
+            notify: (title, body) => {
+                sentNotifications.push({ title, body });
+            }
+        }
+    }
+};
+
 // Virtual mock for gi://GObject module to run in Node/Jest environment
 jest.unstable_mockModule('gi://GObject', () => {
     return {
@@ -14,9 +26,17 @@ jest.unstable_mockModule('gi://GLib', () => {
     return {
         default: {
             timeout_add_seconds: () => 1,
+            timeout_add: (priority, interval, callback) => {
+                if (typeof callback === 'function') {
+                    callback();
+                }
+                return 2;
+            },
             source_remove: () => {},
             get_pid: () => 12345,
             PRIORITY_DEFAULT: 0,
+            SOURCE_REMOVE: false,
+            SOURCE_CONTINUE: true,
         }
     };
 }, { virtual: true });
@@ -62,6 +82,9 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
     return {
         panel: {
             addToStatusArea: () => {},
+        },
+        notify: (title, body) => {
+            sentNotifications.push({ title, body });
         }
     };
 }, { virtual: true });
@@ -112,10 +135,12 @@ let spawnedArgvs = [];
 let spawnedCwds = [];
 let popupSubMenuItems = [];
 let popupMenuItems = [];
+let mockSubprocessStdout = '[]';
 
 class MockSubprocess {
     constructor(argv) {
         this.argv = argv;
+        this.stdout = mockSubprocessStdout;
     }
     get_stdout_pipe() {
         return {};
@@ -127,7 +152,7 @@ class MockSubprocess {
         });
     }
     communicate_utf8_finish(res) {
-        return [true, '[]', ''];
+        return [true, this.stdout, ''];
     }
     wait_async(cancellable, callback) {
         process.nextTick(() => {
@@ -207,6 +232,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
             getSettings() {
                 return {
                     connect: () => 1,
+                    disconnect: () => {},
                     get_string: () => '/path/to/my-project',
                     get_int: () => 25,
                     get_boolean: () => true,
@@ -221,6 +247,9 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
     return {
         panel: {
             addToStatusArea: () => {},
+        },
+        notify: (title, body) => {
+            sentNotifications.push({ title, body });
         }
     };
 }, { virtual: true });
@@ -280,10 +309,18 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         spawnedCwds = [];
         popupSubMenuItems = [];
         popupMenuItems = [];
+        sentNotifications = [];
+        mockSubprocessStdout = '[]';
         extensionInstance = new DockerPulseExtension();
         // Mock properties normally provided by GNOME Shell at runtime
         extensionInstance.path = '/home/user/.local/share/gnome-shell/extensions/dockerpulse';
         extensionInstance.uuid = 'dockerpulse@github.com';
+    });
+
+    afterEach(() => {
+        if (extensionInstance) {
+            extensionInstance.disable();
+        }
     });
 
     test('should spawn the wrapper with correct arguments including parent pid and command', () => {
@@ -392,5 +429,78 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '--working-directory', '/path/to/my-project',
             '-e', 'docker exec -it my-container bash'
         ]);
+    });
+
+    test('should consolidate multiple unhealthy container alerts into a single notification', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        // Flush background runs from construction
+        await new Promise(resolve => process.nextTick(resolve));
+        sentNotifications = [];
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._unhealthyContainers = new Set(); // No containers are currently unhealthy
+
+        // Simulate 3 containers becoming unhealthy simultaneously
+        mockSubprocessStdout = JSON.stringify([
+            { Name: 'service-web', State: 'running', Health: 'unhealthy' },
+            { Name: 'service-db', State: 'running', Health: 'unhealthy' },
+            { Name: 'service-redis', State: 'running', Health: 'unhealthy' }
+        ]);
+
+        // Await the asynchronous state refresh
+        await indicator._refreshState();
+
+        // Check notifications sent
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].title).toBe('DockerPulse Warning');
+        expect(sentNotifications[0].body).toBe('3 containers are unhealthy: service-web, service-db, service-redis');
+    });
+
+    test('should send a singular notification if only one container becomes unhealthy', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        // Flush background runs from construction
+        await new Promise(resolve => process.nextTick(resolve));
+        sentNotifications = [];
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._unhealthyContainers = new Set();
+
+        mockSubprocessStdout = JSON.stringify([
+            { Name: 'service-web', State: 'running', Health: 'unhealthy' },
+            { Name: 'service-db', State: 'running', Health: 'healthy' }
+        ]);
+
+        await indicator._refreshState();
+
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].title).toBe('DockerPulse Warning');
+        expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-web');
+    });
+
+    test('should not send notifications for containers that were already unhealthy', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        // Flush background runs from construction
+        await new Promise(resolve => process.nextTick(resolve));
+        sentNotifications = [];
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._unhealthyContainers = new Set(['service-web']); // Already recorded as unhealthy
+
+        mockSubprocessStdout = JSON.stringify([
+            { Name: 'service-web', State: 'running', Health: 'unhealthy' },
+            { Name: 'service-db', State: 'running', Health: 'unhealthy' } // newly unhealthy
+        ]);
+
+        await indicator._refreshState();
+
+        // Only service-db is newly unhealthy, so we expect a singular notification for service-db
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
     });
 });

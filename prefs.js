@@ -136,118 +136,39 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
             }
         });
 
-        let overrideGroup = new Adw.PreferencesGroup({
-            title: 'Docker Connection Overrides',
-            description: 'Configure manual connection overrides (takes precedence over auto-discovery)',
+        const terminalValues = ['auto', 'ptyxis', 'kgx', 'gnome-terminal', 'xterm'];
+        let comboRow = new Adw.ComboRow({
+            title: 'Terminal Emulator',
+            subtitle: 'Preferred terminal emulator to use when opening container shells or logs',
         });
-        page.add(overrideGroup);
+        let model = Gtk.StringList.new([
+            'Automatic',
+            'Ptyxis',
+            'GNOME Console',
+            'gnome-terminal',
+            'xterm'
+        ]);
+        comboRow.model = model;
 
-        let customHostRow = new Adw.EntryRow({
-            title: 'Custom Docker Host (DOCKER_HOST)',
-            text: settings.get_string('custom-host') || '',
-            placeholder_text: 'e.g., tcp://1.2.3.4:2376 or unix:///run/user/1000/docker.sock',
-        });
-        overrideGroup.add(customHostRow);
-
-        customHostRow.connect('changed', () => {
-            try {
-                settings.set_string('custom-host', customHostRow.get_text().trim());
-            } catch (e) {
-                console.error('[DockerPulse] Error saving custom-host:', e);
-            }
-        });
-
-        let customCertPathRow = new Adw.EntryRow({
-            title: 'Custom Cert Path (DOCKER_CERT_PATH)',
-            text: settings.get_string('custom-cert-path') || '',
-            placeholder_text: 'e.g., /home/user/.docker/certs',
-        });
-        overrideGroup.add(customCertPathRow);
-
-        customCertPathRow.connect('changed', () => {
-            try {
-                settings.set_string('custom-cert-path', customCertPathRow.get_text().trim());
-            } catch (e) {
-                console.error('[DockerPulse] Error saving custom-cert-path:', e);
-            }
-        });
-
-        let customTlsVerifyRow = new Adw.SwitchRow({
-            title: 'Enable TLS Verification (DOCKER_TLS_VERIFY)',
-            active: settings.get_boolean('custom-tls-verify'),
-        });
-        overrideGroup.add(customTlsVerifyRow);
-
-        customTlsVerifyRow.connect('notify::active', () => {
-            try {
-                settings.set_boolean('custom-tls-verify', customTlsVerifyRow.active);
-            } catch (e) {
-                console.error('[DockerPulse] Error saving custom-tls-verify:', e);
-            }
-        });
-
-        let diagGroup = new Adw.PreferencesGroup({
-            title: 'Connection Diagnostics',
-            description: 'Docker daemon connection status and parameters',
-        });
-        page.add(diagGroup);
-
-        let statusRow = new Adw.ActionRow({
-            title: 'Connection Status',
-            subtitle: 'Resolving environment...',
-        });
-        diagGroup.add(statusRow);
-
-        let resolvedHostRow = new Adw.ActionRow({
-            title: 'Resolved DOCKER_HOST',
-            subtitle: 'Not resolved',
-        });
-        diagGroup.add(resolvedHostRow);
-
-        let resolvedCertPathRow = new Adw.ActionRow({
-            title: 'Resolved DOCKER_CERT_PATH',
-            subtitle: 'Not resolved',
-        });
-        diagGroup.add(resolvedCertPathRow);
-
-        let resolvedTlsVerifyRow = new Adw.ActionRow({
-            title: 'Resolved DOCKER_TLS_VERIFY',
-            subtitle: 'Not resolved',
-        });
-        diagGroup.add(resolvedTlsVerifyRow);
-
-        let detailsRow = new Adw.ActionRow({
-            title: 'Diagnostic Details',
-            subtitle: 'None',
-        });
-        diagGroup.add(detailsRow);
-
-        function updateDiagnostics() {
-            let status = settings.get_string('diagnostic-status') || 'unknown';
-            let host = settings.get_string('diagnostic-resolved-host') || 'None';
-            let certPath = settings.get_string('diagnostic-resolved-cert-path') || 'None';
-            let tlsVerify = settings.get_string('diagnostic-resolved-tls-verify') || 'None';
-            let errorMsg = settings.get_string('diagnostic-error') || 'None';
-
-            if (status === 'connected') {
-                statusRow.set_subtitle('🟢 Connected / Validated successfully');
-            } else if (status === 'error') {
-                statusRow.set_subtitle('🔴 Connection failed');
-            } else {
-                statusRow.set_subtitle('⚪ Resolving / Unknown');
-            }
-
-            resolvedHostRow.set_subtitle(host);
-            resolvedCertPathRow.set_subtitle(certPath);
-            resolvedTlsVerifyRow.set_subtitle(tlsVerify);
-            detailsRow.set_subtitle(errorMsg);
+        try {
+            let currentValue = settings.get_string('terminal-emulator') || 'auto';
+            let index = terminalValues.indexOf(currentValue);
+            if (index === -1) index = 0;
+            comboRow.selected = index;
+        } catch (e) {
+            console.error('[DockerPulse] Error setting initial terminal value:', e);
         }
 
-        updateDiagnostics();
-        settings.connect('changed', (settings, key) => {
-            if (key.startsWith('diagnostic-')) {
-                updateDiagnostics();
+        comboRow.connect('notify::selected', () => {
+            try {
+                let selectedIndex = comboRow.selected;
+                if (selectedIndex >= 0 && selectedIndex < terminalValues.length) {
+                    settings.set_string('terminal-emulator', terminalValues[selectedIndex]);
+                }
+            } catch (e) {
+                console.error('[DockerPulse] Error saving terminal-emulator:', e);
             }
         });
+        group.add(comboRow);
     }
 }
