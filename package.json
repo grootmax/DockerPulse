@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --experimental-vm-modules $(which jest) --testMatch '**/*.test.js' && node test.js"
+    "test": "node --experimental-vm-modules $(which jest) --testMatch '**/*.test.js' && node test.js",
+    "validate": "eslint . && tsc --project jsconfig.json && npm test"
   },
   "repository": {
     "type": "git",
@@ -17,5 +18,10 @@
   "bugs": {
     "url": "https://github.com/grootmax/DockerPulse/issues"
   },
-  "homepage": "https://github.com/grootmax/DockerPulse#readme"
+  "homepage": "https://github.com/grootmax/DockerPulse#readme",
+  "devDependencies": {
+    "eslint": "^10.8.1",
+    "eslint-plugin-jsdoc": "^64.2.0",
+    "typescript": "^7.0.2"
+  }
 }
