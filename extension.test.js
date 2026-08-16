@@ -1,5 +1,16 @@
 import { jest } from '@jest/globals';
 
+global.mockClipboardText = {};
+global.mockMessageTraySources = [];
+global.mockNotifications = [];
+global.mockTerminalFail = false;
+global.mockSettings = {
+    'terminal-emulator': 'auto',
+    'project-path': '/path/to/my-project',
+    'poll-interval': 25,
+    'show-container-count': true,
+};
+
 // Virtual mock for gi://GObject module to run in Node/Jest environment
 jest.unstable_mockModule('gi://GObject', () => {
     return {
@@ -53,6 +64,19 @@ jest.unstable_mockModule('gi://St', () => {
                 constructor() {}
                 connect() {}
             },
+            ClipboardType: {
+                CLIPBOARD: 0,
+                PRIMARY: 1,
+            },
+            Clipboard: {
+                get_default: () => {
+                    return {
+                        set_text: (type, text) => {
+                            global.mockClipboardText[type] = text;
+                        }
+                    };
+                }
+            }
         }
     };
 }, { virtual: true });
@@ -62,6 +86,43 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
     return {
         panel: {
             addToStatusArea: () => {},
+        },
+        messageTray: {
+            add: (source) => {
+                global.mockMessageTraySources.push(source);
+            }
+        }
+    };
+}, { virtual: true });
+
+jest.unstable_mockModule('resource:///org/gnome/shell/ui/messageTray.js', () => {
+    return {
+        Source: class {
+            constructor(name, icon) {
+                this.name = name;
+                this.icon = icon;
+                global.mockMessageTraySources.push(this);
+            }
+            showNotification(notification) {
+                this.shownNotification = notification;
+                global.mockNotifications.push(notification);
+            }
+        },
+        Notification: class {
+            constructor(source, title, body) {
+                this.source = source;
+                this.title = title;
+                this.body = body;
+                this.transient = false;
+                this.actions = [];
+            }
+            setTransient(val) { this.transient = val; }
+            addAction(label, callback) {
+                this.actions.push({ label, callback });
+            }
+            destroy() {
+                global.mockNotifications = global.mockNotifications.filter(n => n !== this);
+            }
         }
     };
 }, { virtual: true });
@@ -129,11 +190,40 @@ class MockSubprocess {
     communicate_utf8_finish(res) {
         return [true, '[]', ''];
     }
+    wait_async(cancellable, callback) {
+        process.nextTick(() => {
+            callback(this, 'dummy-res');
+        });
+    }
+    wait_finish(res) {
+        return true;
+    }
 }
 
 jest.unstable_mockModule('gi://Gio', () => {
     return {
         default: {
+            Subprocess: class {
+                constructor(config) {
+                    this.argv = config ? config.argv : [];
+                    this.flags = config ? config.flags : 0;
+                }
+                init() {}
+                wait_async(cancellable, callback) {
+                    process.nextTick(() => {
+                        callback(this, 'dummy-res');
+                    });
+                }
+                wait_finish(res) {
+                    return true;
+                }
+                static new(argv, flags) {
+                    if (global.mockTerminalFail) {
+                        throw new Error('Terminal spawn failed');
+                    }
+                    return new MockSubprocess(argv);
+                }
+            },
             SubprocessLauncher: class {
                 constructor() {}
                 set_cwd(cwd) {
@@ -145,6 +235,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                 }
             },
             SubprocessFlags: {
+                NONE: 0,
                 STDOUT_PIPE: 1,
                 STDERR_PIPE: 2,
             },
@@ -180,8 +271,9 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
             getSettings() {
                 return {
                     connect: () => 1,
-                    get_string: () => '/path/to/my-project',
-                    get_int: () => 25,
+                    get_string: (key) => global.mockSettings[key] || '/path/to/my-project',
+                    get_int: (key) => global.mockSettings[key] || 25,
+                    get_boolean: (key) => global.mockSettings[key] !== undefined ? global.mockSettings[key] : true,
                 };
             }
         },
@@ -193,6 +285,11 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
     return {
         panel: {
             addToStatusArea: () => {},
+        },
+        messageTray: {
+            add: (source) => {
+                global.mockMessageTraySources.push(source);
+            }
         }
     };
 }, { virtual: true });
@@ -248,6 +345,16 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
     let extensionInstance;
 
     beforeEach(() => {
+        global.mockClipboardText = {};
+        global.mockMessageTraySources = [];
+        global.mockNotifications = [];
+        global.mockTerminalFail = false;
+        global.mockSettings = {
+            'terminal-emulator': 'auto',
+            'project-path': '/path/to/my-project',
+            'poll-interval': 25,
+            'show-container-count': true,
+        };
         spawnedArgvs = [];
         spawnedCwds = [];
         popupSubMenuItems = [];
@@ -345,5 +452,87 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(stoppedItem).toBeDefined();
         expect(stoppedItem.label_text).toContain('🔴');
         expect(stoppedItem.label_text).toContain('[inactive]');
+    });
+
+    test('should construct safe array-based terminal commands and preserve spaces', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+
+        const GioModule = await import('gi://Gio');
+        const originalNew = GioModule.default.Subprocess.new;
+        let capturedArgv = null;
+        GioModule.default.Subprocess.new = (argv, flags) => {
+            capturedArgv = argv;
+            return { init: () => {} };
+        };
+
+        try {
+            indicator._spawnTerminalCommand(['docker', 'compose', 'exec', 'web', 'echo hello world']);
+            
+            expect(capturedArgv).toEqual([
+                'ptyxis',
+                '--working-directory',
+                '/path/to/my-project',
+                '--',
+                'docker',
+                'compose',
+                'exec',
+                'web',
+                'echo hello world'
+            ]);
+        } finally {
+            GioModule.default.Subprocess.new = originalNew;
+        }
+    });
+
+    test('should respect user terminal preferences and immediately update used application', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+
+        global.mockSettings['terminal-emulator'] = 'gnome-terminal';
+
+        const GioModule = await import('gi://Gio');
+        const originalNew = GioModule.default.Subprocess.new;
+        let capturedArgv = null;
+        GioModule.default.Subprocess.new = (argv, flags) => {
+            capturedArgv = argv;
+            return { init: () => {} };
+        };
+
+        try {
+            indicator._spawnTerminalCommand(['docker', 'compose', 'logs']);
+            
+            expect(capturedArgv).toEqual([
+                'gnome-terminal',
+                '--working-directory=/path/to/my-project',
+                '--',
+                'docker',
+                'compose',
+                'logs'
+            ]);
+        } finally {
+            GioModule.default.Subprocess.new = originalNew;
+        }
+    });
+
+    test('should fallback to copying command to clipboard and triggering interactive notification when launching fails', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my project';
+
+        global.mockTerminalFail = true;
+
+        indicator._spawnTerminalCommand(['docker', 'compose', 'exec', 'web', 'echo hello']);
+
+        expect(global.mockClipboardText[0]).toBe("cd '/path/to/my project' && docker compose exec web 'echo hello'");
+        expect(global.mockClipboardText[1]).toBe("cd '/path/to/my project' && docker compose exec web 'echo hello'");
+
+        expect(global.mockMessageTraySources.length).toBeGreaterThan(0);
+        expect(global.mockNotifications.length).toBeGreaterThan(0);
+        const notification = global.mockNotifications[0];
+        expect(notification.title).toBe("Terminal Launch Failed");
+        expect(notification.body).toContain("copied to your clipboard");
     });
 });

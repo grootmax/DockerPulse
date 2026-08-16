@@ -135,5 +135,40 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
                 console.error('[DockerPulse] Error saving show-container-count:', e);
             }
         });
+
+        const terminalValues = ['auto', 'ptyxis', 'kgx', 'gnome-terminal', 'xterm'];
+        let comboRow = new Adw.ComboRow({
+            title: 'Terminal Emulator',
+            subtitle: 'Preferred terminal emulator to use when opening container shells or logs',
+        });
+        let model = Gtk.StringList.new([
+            'Automatic',
+            'Ptyxis',
+            'GNOME Console',
+            'gnome-terminal',
+            'xterm'
+        ]);
+        comboRow.model = model;
+
+        try {
+            let currentValue = settings.get_string('terminal-emulator') || 'auto';
+            let index = terminalValues.indexOf(currentValue);
+            if (index === -1) index = 0;
+            comboRow.selected = index;
+        } catch (e) {
+            console.error('[DockerPulse] Error setting initial terminal value:', e);
+        }
+
+        comboRow.connect('notify::selected', () => {
+            try {
+                let selectedIndex = comboRow.selected;
+                if (selectedIndex >= 0 && selectedIndex < terminalValues.length) {
+                    settings.set_string('terminal-emulator', terminalValues[selectedIndex]);
+                }
+            } catch (e) {
+                console.error('[DockerPulse] Error saving terminal-emulator:', e);
+            }
+        });
+        group.add(comboRow);
     }
 }
