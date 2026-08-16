@@ -593,6 +593,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 }
 
                 let stateEmoji = '⚪';
+                let healthLabel = '';
                 let displayStatus = status;
                 let healthLabel = '';
 
