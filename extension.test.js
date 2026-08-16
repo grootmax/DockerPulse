@@ -129,6 +129,14 @@ class MockSubprocess {
     communicate_utf8_finish(res) {
         return [true, '[]', ''];
     }
+    wait_async(cancellable, callback) {
+        process.nextTick(() => {
+            if (callback) callback(this, 'dummy-res');
+        });
+    }
+    wait_finish(res) {
+        return true;
+    }
 }
 
 jest.unstable_mockModule('gi://Gio', () => {
@@ -144,7 +152,26 @@ jest.unstable_mockModule('gi://Gio', () => {
                     return new MockSubprocess(argv);
                 }
             },
+            Subprocess: class {
+                constructor(config) {
+                    this.argv = config.argv;
+                    this.flags = config.flags;
+                }
+                init(cancellable) {}
+                wait_async(cancellable, callback) {
+                    process.nextTick(() => {
+                        if (callback) callback(this, 'dummy-res');
+                    });
+                }
+                wait_finish(res) { return true; }
+                get_stdout_pipe() { return {}; }
+                static new(argv, flags) {
+                    spawnedArgvs.push(argv);
+                    return new this({ argv, flags });
+                }
+            },
             SubprocessFlags: {
+                NONE: 0,
                 STDOUT_PIPE: 1,
                 STDERR_PIPE: 2,
             },
@@ -182,6 +209,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                     connect: () => 1,
                     get_string: () => '/path/to/my-project',
                     get_int: () => 25,
+                    get_boolean: () => true,
                 };
             }
         },
@@ -345,5 +373,24 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(stoppedItem).toBeDefined();
         expect(stoppedItem.label_text).toContain('🔴');
         expect(stoppedItem.label_text).toContain('[inactive]');
+    });
+
+    test('should attempt to spawn Ptyxis first with correct arguments', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+
+        // Clear spawnedArgvs to track specifically this spawn
+        spawnedArgvs = [];
+
+        indicator._spawnTerminalCommand(['docker', 'exec', '-it', 'my-container', 'bash']);
+
+        // Since spawnedArgvs tracks every Gio.Subprocess.new call, the first element should be Ptyxis
+        expect(spawnedArgvs.length).toBeGreaterThan(0);
+        expect(spawnedArgvs[0]).toEqual([
+            'ptyxis',
+            '--working-directory', '/path/to/my-project',
+            '-e', 'docker exec -it my-container bash'
+        ]);
     });
 });
