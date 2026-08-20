@@ -24,12 +24,18 @@ export default [
                 global: 'readonly',
                 // Node.js globals
                 process: 'readonly',
+                URL: 'readonly',
+                URLSearchParams: 'readonly',
                 // Jest globals
                 jest: 'readonly',
                 describe: 'readonly',
                 test: 'readonly',
+                it: 'readonly',
                 expect: 'readonly',
-                beforeEach: 'readonly'
+                beforeEach: 'readonly',
+                afterEach: 'readonly',
+                beforeAll: 'readonly',
+                afterAll: 'readonly'
             }
         }
     }
