@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 
 let sentNotifications = [];
 
@@ -34,6 +34,8 @@ jest.unstable_mockModule('gi://GLib', () => {
             },
             source_remove: () => {},
             get_pid: () => 12345,
+            get_user_runtime_dir: () => '/run/user/1000',
+            get_home_dir: () => '/home/user',
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
@@ -133,6 +135,8 @@ jest.unstable_mockModule('gi://Gio', () => {
 
 let spawnedArgvs = [];
 let spawnedCwds = [];
+let spawnedEnvs = [];
+let mockSettings = {};
 let popupSubMenuItems = [];
 let popupMenuItems = [];
 let mockSubprocessStdout = '[]';
@@ -145,6 +149,7 @@ class MockSubprocess {
     get_stdout_pipe() {
         return {};
     }
+    force_exit() {}
     communicate_utf8_async(a, b, callback) {
         // Mock communication finishing immediately to avoid pending promises
         process.nextTick(() => {
@@ -168,12 +173,18 @@ jest.unstable_mockModule('gi://Gio', () => {
     return {
         default: {
             SubprocessLauncher: class {
-                constructor() {}
+                constructor() {
+                    this.env = [];
+                }
                 set_cwd(cwd) {
                     spawnedCwds.push(cwd);
                 }
+                set_environ(env) {
+                    this.env = env;
+                }
                 spawnv(argv) {
                     spawnedArgvs.push(argv);
+                    spawnedEnvs.push(this.env);
                     return new MockSubprocess(argv);
                 }
             },
@@ -183,6 +194,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                     this.flags = config.flags;
                 }
                 init(cancellable) {}
+                force_exit() {}
                 wait_async(cancellable, callback) {
                     process.nextTick(() => {
                         if (callback) callback(this, 'dummy-res');
@@ -233,9 +245,13 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                 return {
                     connect: () => 1,
                     disconnect: () => {},
-                    get_string: () => '/path/to/my-project',
-                    get_int: () => 25,
-                    get_boolean: () => true,
+                    get_string: (key) => {
+                        if (mockSettings[key] !== undefined) return mockSettings[key];
+                        if (key === 'project-path') return '/path/to/my-project';
+                        return '';
+                    },
+                    get_int: (key) => mockSettings[key] !== undefined ? mockSettings[key] : 25,
+                    get_boolean: (key) => mockSettings[key] !== undefined ? mockSettings[key] : true,
                 };
             }
         },
@@ -307,6 +323,8 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
     beforeEach(() => {
         spawnedArgvs = [];
         spawnedCwds = [];
+        spawnedEnvs = [];
+        mockSettings = {};
         popupSubMenuItems = [];
         popupMenuItems = [];
         sentNotifications = [];
@@ -317,10 +335,11 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         extensionInstance.uuid = 'dockerpulse@github.com';
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         if (extensionInstance) {
             extensionInstance.disable();
         }
+        await new Promise(resolve => globalThis.setTimeout(resolve, 0));
     });
 
     test('should spawn the wrapper with correct arguments including parent pid and command', () => {
@@ -502,5 +521,65 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         // Only service-db is newly unhealthy, so we expect a singular notification for service-db
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
+    });
+
+    test('should pass COMPOSE_PROFILES and COMPOSE_FILE to spawned subprocesses when configured', async () => {
+        mockSettings['compose-profiles'] = 'debug,testing';
+        mockSettings['compose-file'] = 'docker-compose.yml:docker-compose.override.yml';
+
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        spawnedArgvs = [];
+        spawnedEnvs = [];
+
+        await indicator._refreshState();
+
+        expect(spawnedEnvs.length).toBeGreaterThan(0);
+        const latestEnv = spawnedEnvs[spawnedEnvs.length - 1];
+        expect(latestEnv).toContain('COMPOSE_PROFILES=debug,testing');
+        expect(latestEnv).toContain('COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml');
+
+        // Confirm argv was not modified by compose environment settings
+        expect(spawnedArgvs).toContainEqual(['docker', 'compose', 'ps', '-a', '--format', 'json']);
+    });
+
+    test('should inject COMPOSE_PROFILES and COMPOSE_FILE in stack commands', async () => {
+        mockSettings['compose-profiles'] = 'prod';
+        mockSettings['compose-file'] = 'docker-compose.prod.yml';
+
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        spawnedArgvs = [];
+        spawnedEnvs = [];
+
+        await indicator._runStackCommand(['docker', 'compose', 'up', '-d']);
+
+        expect(spawnedEnvs.length).toBeGreaterThan(0);
+        const stackEnv = spawnedEnvs[0];
+        expect(stackEnv).toContain('COMPOSE_PROFILES=prod');
+        expect(stackEnv).toContain('COMPOSE_FILE=docker-compose.prod.yml');
+        expect(spawnedArgvs[0]).toEqual(['docker', 'compose', 'up', '-d']);
+    });
+
+    test('should not set COMPOSE_PROFILES or COMPOSE_FILE when settings are empty', async () => {
+        mockSettings['compose-profiles'] = '';
+        mockSettings['compose-file'] = '';
+
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        spawnedArgvs = [];
+        spawnedEnvs = [];
+
+        await indicator._refreshState();
+
+        expect(spawnedEnvs.length).toBeGreaterThan(0);
+        const latestEnv = spawnedEnvs[spawnedEnvs.length - 1];
+        const hasProfiles = latestEnv.some(item => item.startsWith('COMPOSE_PROFILES='));
+        const hasComposeFile = latestEnv.some(item => item.startsWith('COMPOSE_FILE='));
+        expect(hasProfiles).toBe(false);
+        expect(hasComposeFile).toBe(false);
     });
 });

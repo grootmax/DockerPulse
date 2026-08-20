@@ -176,6 +176,20 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this._refreshState();
     }
 
+    _getLauncherEnviron() {
+        let env = getSafeEnviron();
+        if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
+        if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
+        if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+
+        let profiles = getSettingString(this._settings, 'compose-profiles', '');
+        let composeFile = getSettingString(this._settings, 'compose-file', '');
+        if (profiles) env = setEnvironVar(env, 'COMPOSE_PROFILES', profiles);
+        if (composeFile) env = setEnvironVar(env, 'COMPOSE_FILE', composeFile);
+
+        return env;
+    }
+
     async _discoverAndValidateEnvironment() {
         let customHost = getSettingString(this._settings, 'custom-host', '');
         let customCertPath = getSettingString(this._settings, 'custom-cert-path', '');
@@ -273,10 +287,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             let testLauncher = new Gio.SubprocessLauncher({
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             });
-            let testEnv = getSafeEnviron();
-            if (resolvedHost) testEnv = setEnvironVar(testEnv, 'DOCKER_HOST', resolvedHost);
-            if (resolvedCertPath) testEnv = setEnvironVar(testEnv, 'DOCKER_CERT_PATH', resolvedCertPath);
-            if (resolvedTlsVerify) testEnv = setEnvironVar(testEnv, 'DOCKER_TLS_VERIFY', resolvedTlsVerify);
+            let testEnv = this._getLauncherEnviron();
             if (typeof testLauncher.set_environ === 'function') {
                 testLauncher.set_environ(testEnv);
             }
@@ -379,10 +390,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             });
             launcher.set_cwd(this._projectPath);
-            let env = getSafeEnviron();
-            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
-            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
-            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            let env = this._getLauncherEnviron();
             if (typeof launcher.set_environ === 'function') {
                 launcher.set_environ(env);
             }
@@ -601,10 +609,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             });
             launcher.set_cwd(this._projectPath);
-            let env = getSafeEnviron();
-            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
-            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
-            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            let env = this._getLauncherEnviron();
             if (typeof launcher.set_environ === 'function') {
                 launcher.set_environ(env);
             }
@@ -930,10 +935,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 flags: Gio.SubprocessFlags.NONE,
             });
             launcher.set_cwd(this._projectPath);
-            let env = getSafeEnviron();
-            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
-            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
-            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            let env = this._getLauncherEnviron();
             if (typeof launcher.set_environ === 'function') {
                 launcher.set_environ(env);
             }
@@ -989,10 +991,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             let launcher = new Gio.SubprocessLauncher({
                 flags: Gio.SubprocessFlags.NONE,
             });
-            let env = getSafeEnviron();
-            if (this._resolvedHost) env = setEnvironVar(env, 'DOCKER_HOST', this._resolvedHost);
-            if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
-            if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
+            let env = this._getLauncherEnviron();
             if (typeof launcher.set_environ === 'function') {
                 launcher.set_environ(env);
             }

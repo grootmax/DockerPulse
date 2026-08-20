@@ -96,6 +96,36 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
             }
         });
 
+        let profilesRow = new Adw.EntryRow({
+            title: 'Active Compose Profiles',
+            text: settings.get_string('compose-profiles') || '',
+            placeholder_text: 'e.g. debug,testing (comma-separated)',
+        });
+        group.add(profilesRow);
+
+        profilesRow.connect('changed', () => {
+            try {
+                settings.set_string('compose-profiles', profilesRow.get_text().trim());
+            } catch (e) {
+                console.error('[DockerPulse] Error saving compose-profiles:', e);
+            }
+        });
+
+        let fileRow = new Adw.EntryRow({
+            title: 'Compose File Paths',
+            text: settings.get_string('compose-file') || '',
+            placeholder_text: 'e.g. docker-compose.yml:docker-compose.override.yml',
+        });
+        group.add(fileRow);
+
+        fileRow.connect('changed', () => {
+            try {
+                settings.set_string('compose-file', fileRow.get_text().trim());
+            } catch (e) {
+                console.error('[DockerPulse] Error saving compose-file:', e);
+            }
+        });
+
         let adj = new Gtk.Adjustment({
             value: settings.get_int('poll-interval') || 25,
             lower: 5,
