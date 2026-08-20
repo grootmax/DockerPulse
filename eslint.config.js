@@ -22,14 +22,26 @@ export default [
                 console: 'readonly',
                 imports: 'readonly',
                 global: 'readonly',
-                // Node.js globals
+                globalThis: 'readonly',
+                // Node.js / Standard Web globals
                 process: 'readonly',
+                setTimeout: 'readonly',
+                clearTimeout: 'readonly',
+                setInterval: 'readonly',
+                clearInterval: 'readonly',
+                URL: 'readonly',
+                URLSearchParams: 'readonly',
+                Buffer: 'readonly',
                 // Jest globals
                 jest: 'readonly',
                 describe: 'readonly',
                 test: 'readonly',
+                it: 'readonly',
                 expect: 'readonly',
-                beforeEach: 'readonly'
+                beforeEach: 'readonly',
+                afterEach: 'readonly',
+                beforeAll: 'readonly',
+                afterAll: 'readonly'
             }
         }
     }
