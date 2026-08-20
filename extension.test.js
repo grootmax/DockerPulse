@@ -435,6 +435,19 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         ]);
     });
 
+    test('should insert compose flags only for docker compose commands in _buildComposeCommand', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._composeFiles = 'override.yml';
+        indicator._activeProfiles = 'dev';
+
+        const composeCmd = indicator._buildComposeCommand(['docker', 'compose', 'ps']);
+        expect(composeCmd).toEqual(['docker', 'compose', '-f', 'override.yml', '--profile', 'dev', 'ps']);
+
+        const nonComposeCmd = indicator._buildComposeCommand(['docker', 'exec', '-it', 'cntr', 'sh']);
+        expect(nonComposeCmd).toEqual(['docker', 'exec', '-it', 'cntr', 'sh']);
+    });
+
     test('should consolidate multiple unhealthy container alerts into a single notification', async () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;

@@ -886,7 +886,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
         if (commandArgs[0] === 'docker' && commandArgs[1] === 'compose') {
             return ['docker', 'compose', ...flags, ...commandArgs.slice(2)];
         }
-        return ['docker', 'compose', ...flags, ...commandArgs];
+        if (commandArgs[0] === 'docker-compose') {
+            return ['docker-compose', ...flags, ...commandArgs.slice(1)];
+        }
+        return commandArgs;
     }
 
     async _refreshState() {
