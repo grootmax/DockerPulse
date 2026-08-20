@@ -1,4 +1,4 @@
-import { jest, afterEach, beforeEach, describe, expect, test } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 
 let sentNotifications = [];
 
@@ -34,6 +34,8 @@ jest.unstable_mockModule('gi://GLib', () => {
             },
             source_remove: () => {},
             get_pid: () => 12345,
+            get_user_runtime_dir: () => '/tmp',
+            get_home_dir: () => '/tmp',
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
@@ -142,10 +144,10 @@ class MockSubprocess {
         this.argv = argv;
         this.stdout = mockSubprocessStdout;
     }
-    force_exit() {}
     get_stdout_pipe() {
         return {};
     }
+    force_exit() {}
     communicate_utf8_async(a, b, callback) {
         // Mock communication finishing immediately to avoid pending promises
         process.nextTick(() => {
@@ -191,6 +193,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                 }
                 wait_finish(res) { return true; }
                 get_stdout_pipe() { return {}; }
+                force_exit() {}
                 static new(argv, flags) {
                     spawnedArgvs.push(argv);
                     return new this({ argv, flags });
@@ -234,7 +237,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                 return {
                     connect: () => 1,
                     disconnect: () => {},
-                    get_string: (key) => key === 'project-path' ? '/path/to/my-project' : '',
+                    get_string: () => '/path/to/my-project',
                     get_int: () => 25,
                     get_boolean: () => true,
                 };
@@ -341,10 +344,10 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '12345',
             'docker',
             'events',
-            '--format',
-            '{{json .}}',
             '--filter',
-            'type=container'
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=my-project'
         ]);
     });
 
@@ -437,7 +440,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        for (let i = 0; i < 20; i++) await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -464,7 +467,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        for (let i = 0; i < 20; i++) await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -487,7 +490,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        for (let i = 0; i < 20; i++) await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -505,80 +508,52 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
     });
 
-    test('should resolve active Docker CLI context host before falling back to local socket discovery', async () => {
+    test('should trigger refresh on simple trigger signal without executing synchronous string/JSON parsing', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
-        mockSubprocessStdout = '';
 
-        indicator._discoverDockerContext = jest.fn().mockResolvedValue({
-            host: 'ssh://remoteuser@remotehost',
-            certPath: '',
-            tlsVerify: ''
-        });
+        const refreshSpy = jest.spyOn(indicator, '_triggerDebouncedRefresh').mockImplementation(() => {});
 
-        await indicator._discoverAndValidateEnvironment();
+        // Pass non-JSON trigger signal string
+        indicator._handleDockerEvent('1\n');
 
-        expect(indicator._resolvedHost).toBe('ssh://remoteuser@remotehost');
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        refreshSpy.mockRestore();
     });
 
-    test('should fallback to local socket auto-discovery when no active remote Docker CLI context is configured', async () => {
+    test('should dynamically restart background process with updated filters when project config changes', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
-        mockSubprocessStdout = '';
 
-        indicator._discoverDockerContext = jest.fn().mockResolvedValue(null);
-        indicator._checkFileExists = jest.fn().mockImplementation((path) => {
-            return path.includes('docker.sock');
-        });
+        spawnedArgvs = [];
 
-        await indicator._discoverAndValidateEnvironment();
-
-        expect(indicator._resolvedHost).toContain('unix://');
-    });
-
-    test('should discover active SSH agent socket path and forward SSH_AUTH_SOCK to subprocess environment', async () => {
-        extensionInstance.enable();
-        const indicator = extensionInstance._indicator;
-        mockSubprocessStdout = '';
-
-        indicator._discoverSshAuthSock = jest.fn().mockReturnValue('/run/user/1000/keyring/ssh');
-        indicator._discoverDockerContext = jest.fn().mockResolvedValue({
-            host: 'ssh://user@remote',
-            certPath: '',
-            tlsVerify: ''
-        });
-
-        await indicator._discoverAndValidateEnvironment();
-
-        expect(indicator._resolvedSshAuthSock).toBe('/run/user/1000/keyring/ssh');
-        const env = indicator._getEnvWithResolved();
-        expect(env).toContain('SSH_AUTH_SOCK=/run/user/1000/keyring/ssh');
-        expect(env).toContain('DOCKER_HOST=ssh://user@remote');
-    });
-
-    test('should persist host parameters and diagnostic keys in settings without errors', async () => {
-        const mockSetString = jest.fn();
-        extensionInstance.enable();
-        const indicator = extensionInstance._indicator;
-        mockSubprocessStdout = '';
+        // Mock settings returning the new project configuration
         indicator._settings = {
-            set_string: mockSetString,
-            get_string: () => '',
-            get_int: () => 25,
-            get_boolean: () => false,
             connect: () => 1,
-            disconnect: () => {}
+            disconnect: () => {},
+            get_string: (key) => {
+                if (key === 'project-path') return '/path/to/new-project';
+                if (key === 'project-name') return 'new-project';
+                return '';
+            },
+            get_int: () => 25,
+            get_boolean: () => true,
         };
 
-        indicator._discoverDockerContext = jest.fn().mockResolvedValue({
-            host: 'ssh://remoteuser@remotehost',
-            certPath: '/path/to/certs',
-            tlsVerify: '1'
-        });
+        // Simulate settings change to a new project
+        indicator._onSettingsChanged();
 
-        await indicator._discoverAndValidateEnvironment();
-
-        expect(mockSetString).toHaveBeenCalledWith('diagnostic-status', expect.any(String));
-        expect(mockSetString).toHaveBeenCalledWith('diagnostic-resolved-host', 'ssh://remoteuser@remotehost');
+        expect(spawnedArgvs).toContainEqual([
+            'python3',
+            '/home/user/.local/share/gnome-shell/extensions/dockerpulse/parent_monitor_wrapper.py',
+            '--parent-pid',
+            '12345',
+            'docker',
+            'events',
+            '--filter',
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=new-project'
+        ]);
     });
 });

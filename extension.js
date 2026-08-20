@@ -63,11 +63,52 @@ function setEnvironVar(env, key, value) {
     return filtered;
 }
 
+function extractHealthValue(val) {
+    if (val === null || val === undefined) {
+        return '';
+    }
+    if (typeof val === 'string') {
+        return val;
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') {
+        return String(val);
+    }
+    if (typeof val === 'object') {
+        let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+        if (candidate !== undefined && candidate !== null) {
+            return extractHealthValue(candidate);
+        }
+        return '';
+    }
+    return '';
+}
+
+function extractStringValue(val) {
+    if (val === null || val === undefined) {
+        return '';
+    }
+    if (typeof val === 'string') {
+        return val;
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') {
+        return String(val);
+    }
+    if (typeof val === 'object') {
+        let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+        if (candidate !== undefined && candidate !== null) {
+            return extractStringValue(candidate);
+        }
+        return '';
+    }
+    return '';
+}
+
 const DockerPulseIndicator = GObject.registerClass(
 class DockerPulseIndicator extends PanelMenu.Button {
     _init(extension) {
         super._init(0.0, 'DockerPulse');
         this._extension = extension;
+        this._destroyed = false;
         
         try {
             this._settings = extension.getSettings();
@@ -133,6 +174,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _onSettingsChanged() {
         this._projectPath = getSettingString(this._settings, 'project-path', '');
         this._showContainerCount = getSettingBool(this._settings, 'show-container-count', true);
+        this._composeFiles = getSettingString(this._settings, 'compose-files', '') || getSettingString(this._settings, 'compose-file', '');
+        this._activeProfiles = getSettingString(this._settings, 'active-profiles', '') || getSettingString(this._settings, 'profiles', '');
         
         // Stop current stream
         this._stopEventStream();
@@ -144,7 +187,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             // Determine project name from settings, fallback to path, then "DockerPulse"
             let nameSetting = getSettingString(this._settings, 'project-name', '');
             if (nameSetting) {
-                this._cachedProjectName = nameSetting;
+                this._cachedProjectName = nameSetting.split('/').pop();
             } else {
                 this._cachedProjectName = this._projectPath.split('/').pop() || 'DockerPulse';
             }
@@ -153,6 +196,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             // Trigger background environment discovery and diagnostics
             this._discoverAndValidateEnvironment().then(() => {
+                if (this._destroyed) return;
                 this._stopEventStream();
                 this._startEventStream();
                 this._refreshState();
@@ -597,11 +641,19 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 launcher.set_environ(env);
             }
             
+            // Determine project name from settings, fallback to path, then "DockerPulse"
+            let projectName = this._cachedProjectName;
+            if (!projectName && this._projectPath) {
+                let nameSetting = getSettingString(this._settings, 'project-name', '');
+                projectName = (nameSetting ? nameSetting.split('/').pop() : '') || (this._projectPath.split('/').pop() || 'DockerPulse');
+                this._cachedProjectName = projectName;
+            }
+
             // Get current parent PID and path to wrapper
             let parentPid = GLib.get_pid().toString();
             let wrapperPath = this._extension.path + '/parent_monitor_wrapper.py';
 
-            // Stream container events within the self-terminating wrapper
+            // Stream container events within the self-terminating wrapper with native daemon filter
             let argv = [
                 'python3',
                 wrapperPath,
@@ -609,10 +661,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 parentPid,
                 'docker',
                 'events',
-                '--format',
-                '{{json .}}',
                 '--filter',
-                'type=container'
+                'type=container',
+                '--filter',
+                `label=com.docker.compose.project=${projectName}`
             ];
             this._eventProc = launcher.spawnv(argv);
             if (this._extension && this._extension._registry) {
@@ -638,7 +690,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             try {
                 let [line, length] = stream.read_line_finish_utf8(res);
                 if (line !== null) {
-                    this._handleDockerEvent(line);
+                    this._triggerDebouncedRefresh();
                     this._readLine(stream);
                 } else {
                     // Subprocess exited
@@ -682,32 +734,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _handleDockerEvent(line) {
-        try {
-            let event = JSON.parse(line.trim());
-            // Filter events to check if they belong to this project
-            let attributes = (event.Actor && event.Actor.Attributes) || {};
-            let project = attributes['com.docker.compose.project'];
-            let workingDir = attributes['com.docker.compose.project.working_dir'] ||
-                             attributes['com.docker.compose.working_dir'] ||
-                             attributes['com.docker.compose.working-dir'] ||
-                             attributes['com.docker.compose.project.working-dir'];
-
-            let matches = false;
-            if (project && this._cachedProjectName && project.toLowerCase() === this._cachedProjectName.toLowerCase()) {
-                matches = true;
-            } else if (workingDir && workingDir === this._projectPath) {
-                matches = true;
-            } else if (!project && !workingDir) {
-                // If we couldn't filter by project attributes, trigger refresh to be safe
-                matches = true;
-            }
-
-            if (matches) {
-                this._triggerDebouncedRefresh();
-            }
-        } catch (e) {
-            // JSON parsing or filtering error
-        }
+        this._triggerDebouncedRefresh();
     }
 
     _triggerDebouncedRefresh() {
@@ -742,8 +769,38 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _isContainerActive(item) {
-        let state = (item.State || item.state || '').toLowerCase();
-        let health = (item.Health || item.health || '').toLowerCase();
+        if (!item || typeof item !== 'object') return false;
+
+        const getHealthVal = (val) => {
+            if (val === null || val === undefined) return '';
+            if (typeof val === 'string') return val;
+            if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+            if (typeof val === 'object') {
+                let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+                if (candidate !== undefined && candidate !== null) {
+                    return getHealthVal(candidate);
+                }
+                return '';
+            }
+            return '';
+        };
+
+        const getStringVal = (val) => {
+            if (val === null || val === undefined) return '';
+            if (typeof val === 'string') return val;
+            if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+            if (typeof val === 'object') {
+                let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+                if (candidate !== undefined && candidate !== null) {
+                    return getStringVal(candidate);
+                }
+                return '';
+            }
+            return '';
+        };
+
+        let state = getStringVal(item.State !== undefined ? item.State : item.state).toLowerCase().trim();
+        let health = getHealthVal(item.Health !== undefined ? item.Health : item.health).toLowerCase().trim();
         let active = state === 'running' || state === 'up';
         if (active) {
             return health !== 'unhealthy';
@@ -791,7 +848,49 @@ class DockerPulseIndicator extends PanelMenu.Button {
         });
     }
 
+    _getComposeFlags() {
+        let flags = [];
+
+        let composeFilesStr = (this._composeFiles !== undefined && this._composeFiles !== null)
+            ? this._composeFiles
+            : (getSettingString(this._settings, 'compose-files', '') || getSettingString(this._settings, 'compose-file', ''));
+
+        if (composeFilesStr) {
+            let files = composeFilesStr.split(',').map(f => f.trim()).filter(Boolean);
+            for (let file of files) {
+                flags.push('-f', file);
+            }
+        }
+
+        let profilesStr = (this._activeProfiles !== undefined && this._activeProfiles !== null)
+            ? this._activeProfiles
+            : (getSettingString(this._settings, 'active-profiles', '') || getSettingString(this._settings, 'profiles', ''));
+
+        if (profilesStr) {
+            let profiles = profilesStr.split(',').map(p => p.trim()).filter(Boolean);
+            for (let profile of profiles) {
+                flags.push('--profile', profile);
+            }
+        }
+
+        return flags;
+    }
+
+    _buildComposeCommand(commandArgs) {
+        if (!Array.isArray(commandArgs)) return commandArgs;
+        let flags = this._getComposeFlags();
+        if (!flags || flags.length === 0) {
+            return commandArgs;
+        }
+
+        if (commandArgs[0] === 'docker' && commandArgs[1] === 'compose') {
+            return ['docker', 'compose', ...flags, ...commandArgs.slice(2)];
+        }
+        return ['docker', 'compose', ...flags, ...commandArgs];
+    }
+
     async _refreshState() {
+        if (this._destroyed) return;
         if (!this._projectPath) {
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
@@ -816,7 +915,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 launcher.set_environ(env);
             }
             // Run docker compose ps -a --format json
-            let argv = ['docker', 'compose', 'ps', '-a', '--format', 'json'];
+            let argv = this._buildComposeCommand(['docker', 'compose', 'ps', '-a', '--format', 'json']);
             let proc = launcher.spawnv(argv);
             if (this._extension && this._extension._registry) {
                 this._extension._registry.register(proc);
@@ -846,10 +945,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let total = containers.length;
 
                 containers.forEach(item => {
-                    if (!item) return;
-                    let name = item.Name || item.name || '';
-                    let state = (item.State || item.state || '').toLowerCase();
-                    let health = (item.Health || item.health || '').toLowerCase();
+                    if (!item || typeof item !== 'object') return;
+                    let name = extractStringValue(item.Name !== undefined ? item.Name : item.name);
+                    let state = extractStringValue(item.State !== undefined ? item.State : item.state).toLowerCase().trim();
+                    let health = extractHealthValue(item.Health !== undefined ? item.Health : item.health).toLowerCase().trim();
                     
                     if ((state === 'running' || state === 'up') && health === 'unhealthy') {
                         currentUnhealthy.add(name);
@@ -877,11 +976,17 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     this._notificationTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 0, () => {
                         this._notificationTimerId = null;
                         try {
-                            if (typeof Main !== 'undefined' && Main.notify) {
+                            if (typeof Main !== 'undefined' && Main.notifyError) {
+                                Main.notifyError("DockerPulse Warning", message);
+                            } else if (typeof Main !== 'undefined' && Main.notify) {
                                 Main.notify("DockerPulse Warning", message);
                             } else {
                                 const uiMain = imports.ui.main;
-                                uiMain.notify("DockerPulse Warning", message);
+                                if (uiMain && uiMain.notifyError) {
+                                    uiMain.notifyError("DockerPulse Warning", message);
+                                } else if (uiMain && uiMain.notify) {
+                                    uiMain.notify("DockerPulse Warning", message);
+                                }
                             }
                         } catch (err) {
                             console.error(`[DockerPulse] Failed to send consolidated notification:`, err);
@@ -1038,18 +1143,14 @@ class DockerPulseIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(emptyItem);
         } else {
             this._state.containers.forEach(item => {
-                if (!item) return;
-                let name = item.Name || item.name || 'container';
-                let service = item.Service || item.service || name;
-                let state = (item.State || item.state || '').toLowerCase();
-                let status = item.Status || item.status || state;
+                if (!item || typeof item !== 'object') return;
+                let name = extractStringValue(item.Name !== undefined ? item.Name : item.name) || 'container';
+                let service = extractStringValue(item.Service !== undefined ? item.Service : item.service) || name;
+                let state = extractStringValue(item.State !== undefined ? item.State : item.state).toLowerCase().trim();
+                let rawStatus = item.Status !== undefined ? item.Status : item.status;
+                let status = extractStringValue(rawStatus) || state;
 
-                let health = '';
-                if (item.Health !== undefined && item.Health !== null) {
-                    health = String(item.Health).toLowerCase();
-                } else if (item.health !== undefined && item.health !== null) {
-                    health = String(item.health).toLowerCase();
-                }
+                let health = extractHealthValue(item.Health !== undefined ? item.Health : item.health).toLowerCase().trim();
 
                 let stateEmoji = '⚪';
                 let healthLabel = '';
@@ -1141,7 +1242,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
             if (typeof launcher.set_environ === 'function') {
                 launcher.set_environ(env);
             }
-            let proc = launcher.spawnv(argv);
+            let fullCommand = this._buildComposeCommand(argv);
+            let proc = launcher.spawnv(fullCommand);
             
             // Wait for the stack action process to complete asynchronously (non-blocking)
             await new Promise((resolve) => {
@@ -1165,28 +1267,30 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _spawnTerminalCommand(commandArgs) {
         if (!this._projectPath) return;
 
+        let fullCommand = this._buildComposeCommand(commandArgs);
+
         let ptyxisArgs = [
             'ptyxis',
             '--working-directory', this._projectPath,
-            '-e', commandArgs.join(' '),
+            '-e', fullCommand.join(' '),
         ];
 
         let gnomeTerminalArgs = [
             'gnome-terminal',
             `--working-directory=${this._projectPath}`,
             '--',
-        ].concat(commandArgs);
+        ].concat(fullCommand);
 
         let kgxArgs = [
             'kgx',
             '--working-directory', this._projectPath,
-            '-e', commandArgs.join(' '),
+            '-e', fullCommand.join(' '),
         ];
 
         let xtermArgs = [
             'xterm',
             '-wdir', this._projectPath,
-            '-e', commandArgs.join(' '),
+            '-e', fullCommand.join(' '),
         ];
 
         let spawnWithEnv = (args) => {
@@ -1220,6 +1324,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        this._destroyed = true;
         this._stopEventStream();
         if (this._settings && this._settingsId) {
             this._settings.disconnect(this._settingsId);
