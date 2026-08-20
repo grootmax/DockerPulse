@@ -26,15 +26,25 @@
       <summary>Terminal Emulator</summary>
       <description>Preferred terminal emulator to use when opening container shells or logs.</description>
     </key>
-    <key name="compose-profiles" type="s">
+    <key name="compose-files" type="s">
       <default>''</default>
-      <summary>Active Compose Profiles</summary>
-      <description>Comma-separated profile names for Docker Compose.</description>
+      <summary>Docker Compose Override Files</summary>
+      <description>Custom Docker Compose override file path(s).</description>
     </key>
     <key name="compose-file" type="s">
       <default>''</default>
-      <summary>Compose File Paths</summary>
-      <description>Custom file paths for Docker Compose.</description>
+      <summary>Docker Compose Override File</summary>
+      <description>Custom Docker Compose override file path.</description>
+    </key>
+    <key name="active-profiles" type="s">
+      <default>''</default>
+      <summary>Active Compose Profiles</summary>
+      <description>Comma-separated list of active Docker Compose v2 profile names.</description>
+    </key>
+    <key name="profiles" type="s">
+      <default>''</default>
+      <summary>Compose Profiles</summary>
+      <description>Comma-separated list of active Docker Compose v2 profile names.</description>
     </key>
   </schema>
 </schemalist>

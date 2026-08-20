@@ -34,8 +34,8 @@ jest.unstable_mockModule('gi://GLib', () => {
             },
             source_remove: () => {},
             get_pid: () => 12345,
-            get_user_runtime_dir: () => '/run/user/1000',
-            get_home_dir: () => '/home/user',
+            get_user_runtime_dir: () => '/tmp',
+            get_home_dir: () => '/tmp',
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
@@ -135,8 +135,6 @@ jest.unstable_mockModule('gi://Gio', () => {
 
 let spawnedArgvs = [];
 let spawnedCwds = [];
-let spawnedEnvs = [];
-let mockSettings = {};
 let popupSubMenuItems = [];
 let popupMenuItems = [];
 let mockSubprocessStdout = '[]';
@@ -173,18 +171,12 @@ jest.unstable_mockModule('gi://Gio', () => {
     return {
         default: {
             SubprocessLauncher: class {
-                constructor() {
-                    this.env = [];
-                }
+                constructor() {}
                 set_cwd(cwd) {
                     spawnedCwds.push(cwd);
                 }
-                set_environ(env) {
-                    this.env = env;
-                }
                 spawnv(argv) {
                     spawnedArgvs.push(argv);
-                    spawnedEnvs.push(this.env);
                     return new MockSubprocess(argv);
                 }
             },
@@ -194,7 +186,6 @@ jest.unstable_mockModule('gi://Gio', () => {
                     this.flags = config.flags;
                 }
                 init(cancellable) {}
-                force_exit() {}
                 wait_async(cancellable, callback) {
                     process.nextTick(() => {
                         if (callback) callback(this, 'dummy-res');
@@ -202,6 +193,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                 }
                 wait_finish(res) { return true; }
                 get_stdout_pipe() { return {}; }
+                force_exit() {}
                 static new(argv, flags) {
                     spawnedArgvs.push(argv);
                     return new this({ argv, flags });
@@ -245,13 +237,9 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                 return {
                     connect: () => 1,
                     disconnect: () => {},
-                    get_string: (key) => {
-                        if (mockSettings[key] !== undefined) return mockSettings[key];
-                        if (key === 'project-path') return '/path/to/my-project';
-                        return '';
-                    },
-                    get_int: (key) => mockSettings[key] !== undefined ? mockSettings[key] : 25,
-                    get_boolean: (key) => mockSettings[key] !== undefined ? mockSettings[key] : true,
+                    get_string: () => '/path/to/my-project',
+                    get_int: () => 25,
+                    get_boolean: () => true,
                 };
             }
         },
@@ -323,8 +311,6 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
     beforeEach(() => {
         spawnedArgvs = [];
         spawnedCwds = [];
-        spawnedEnvs = [];
-        mockSettings = {};
         popupSubMenuItems = [];
         popupMenuItems = [];
         sentNotifications = [];
@@ -335,11 +321,10 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         extensionInstance.uuid = 'dockerpulse@github.com';
     });
 
-    afterEach(async () => {
+    afterEach(() => {
         if (extensionInstance) {
             extensionInstance.disable();
         }
-        await new Promise(resolve => globalThis.setTimeout(resolve, 0));
     });
 
     test('should spawn the wrapper with correct arguments including parent pid and command', () => {
@@ -359,10 +344,10 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '12345',
             'docker',
             'events',
-            '--format',
-            '{{json .}}',
             '--filter',
-            'type=container'
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=my-project'
         ]);
     });
 
@@ -450,12 +435,25 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         ]);
     });
 
+    test('should insert compose flags only for docker compose commands in _buildComposeCommand', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._composeFiles = 'override.yml';
+        indicator._activeProfiles = 'dev';
+
+        const composeCmd = indicator._buildComposeCommand(['docker', 'compose', 'ps']);
+        expect(composeCmd).toEqual(['docker', 'compose', '-f', 'override.yml', '--profile', 'dev', 'ps']);
+
+        const nonComposeCmd = indicator._buildComposeCommand(['docker', 'exec', '-it', 'cntr', 'sh']);
+        expect(nonComposeCmd).toEqual(['docker', 'exec', '-it', 'cntr', 'sh']);
+    });
+
     test('should consolidate multiple unhealthy container alerts into a single notification', async () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -482,7 +480,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -505,7 +503,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -523,63 +521,52 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
     });
 
-    test('should pass COMPOSE_PROFILES and COMPOSE_FILE to spawned subprocesses when configured', async () => {
-        mockSettings['compose-profiles'] = 'debug,testing';
-        mockSettings['compose-file'] = 'docker-compose.yml:docker-compose.override.yml';
-
+    test('should trigger refresh on simple trigger signal without executing synchronous string/JSON parsing', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
 
-        spawnedArgvs = [];
-        spawnedEnvs = [];
+        const refreshSpy = jest.spyOn(indicator, '_triggerDebouncedRefresh').mockImplementation(() => {});
 
-        await indicator._refreshState();
+        // Pass non-JSON trigger signal string
+        indicator._handleDockerEvent('1\n');
 
-        expect(spawnedEnvs.length).toBeGreaterThan(0);
-        const latestEnv = spawnedEnvs[spawnedEnvs.length - 1];
-        expect(latestEnv).toContain('COMPOSE_PROFILES=debug,testing');
-        expect(latestEnv).toContain('COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml');
-
-        // Confirm argv was not modified by compose environment settings
-        expect(spawnedArgvs).toContainEqual(['docker', 'compose', 'ps', '-a', '--format', 'json']);
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        refreshSpy.mockRestore();
     });
 
-    test('should inject COMPOSE_PROFILES and COMPOSE_FILE in stack commands', async () => {
-        mockSettings['compose-profiles'] = 'prod';
-        mockSettings['compose-file'] = 'docker-compose.prod.yml';
-
+    test('should dynamically restart background process with updated filters when project config changes', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
 
         spawnedArgvs = [];
-        spawnedEnvs = [];
 
-        await indicator._runStackCommand(['docker', 'compose', 'up', '-d']);
+        // Mock settings returning the new project configuration
+        indicator._settings = {
+            connect: () => 1,
+            disconnect: () => {},
+            get_string: (key) => {
+                if (key === 'project-path') return '/path/to/new-project';
+                if (key === 'project-name') return 'new-project';
+                return '';
+            },
+            get_int: () => 25,
+            get_boolean: () => true,
+        };
 
-        expect(spawnedEnvs.length).toBeGreaterThan(0);
-        const stackEnv = spawnedEnvs[0];
-        expect(stackEnv).toContain('COMPOSE_PROFILES=prod');
-        expect(stackEnv).toContain('COMPOSE_FILE=docker-compose.prod.yml');
-        expect(spawnedArgvs[0]).toEqual(['docker', 'compose', 'up', '-d']);
-    });
+        // Simulate settings change to a new project
+        indicator._onSettingsChanged();
 
-    test('should not set COMPOSE_PROFILES or COMPOSE_FILE when settings are empty', async () => {
-        mockSettings['compose-profiles'] = '';
-        mockSettings['compose-file'] = '';
-
-        extensionInstance.enable();
-        const indicator = extensionInstance._indicator;
-
-        spawnedArgvs = [];
-        spawnedEnvs = [];
-
-        await indicator._refreshState();
-
-        expect(spawnedEnvs.length).toBeGreaterThan(0);
-        const latestEnv = spawnedEnvs[spawnedEnvs.length - 1];
-        const hasProfiles = latestEnv.some(item => item.startsWith('COMPOSE_PROFILES='));
-        const hasComposeFile = latestEnv.some(item => item.startsWith('COMPOSE_FILE='));
-        expect(hasProfiles).toBe(false);
-        expect(hasComposeFile).toBe(false);
+        expect(spawnedArgvs).toContainEqual([
+            'python3',
+            '/home/user/.local/share/gnome-shell/extensions/dockerpulse/parent_monitor_wrapper.py',
+            '--parent-pid',
+            '12345',
+            'docker',
+            'events',
+            '--filter',
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=new-project'
+        ]);
     });
 });
