@@ -174,8 +174,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _onSettingsChanged() {
         this._projectPath = getSettingString(this._settings, 'project-path', '');
         this._showContainerCount = getSettingBool(this._settings, 'show-container-count', true);
-        this._composeFiles = getSettingString(this._settings, 'compose-files', '') || getSettingString(this._settings, 'compose-file', '');
-        this._activeProfiles = getSettingString(this._settings, 'active-profiles', '') || getSettingString(this._settings, 'profiles', '');
+        this._composeFiles = getSettingString(this._settings, 'compose-files', '');
+        this._activeProfiles = getSettingString(this._settings, 'active-profiles', '');
         
         // Stop current stream
         this._stopEventStream();
@@ -418,7 +418,21 @@ class DockerPulseIndicator extends PanelMenu.Button {
         if (this._resolvedCertPath) env = setEnvironVar(env, 'DOCKER_CERT_PATH', this._resolvedCertPath);
         if (this._resolvedTlsVerify) env = setEnvironVar(env, 'DOCKER_TLS_VERIFY', this._resolvedTlsVerify);
         if (this._resolvedSshAuthSock) env = setEnvironVar(env, 'SSH_AUTH_SOCK', this._resolvedSshAuthSock);
+
+        let profiles = getSettingString(this._settings, 'compose-profiles', '') ||
+                       getSettingString(this._settings, 'active-profiles', '') ||
+                       getSettingString(this._settings, 'profiles', '');
+        let composeFile = getSettingString(this._settings, 'compose-file', '') ||
+                          getSettingString(this._settings, 'compose-files', '');
+
+        if (profiles) env = setEnvironVar(env, 'COMPOSE_PROFILES', profiles);
+        if (composeFile) env = setEnvironVar(env, 'COMPOSE_FILE', composeFile);
+
         return env;
+    }
+
+    _getLauncherEnviron() {
+        return this._getEnvWithResolved();
     }
 
     async _discoverAndValidateEnvironment() {
@@ -853,7 +867,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
         let composeFilesStr = (this._composeFiles !== undefined && this._composeFiles !== null)
             ? this._composeFiles
-            : (getSettingString(this._settings, 'compose-files', '') || getSettingString(this._settings, 'compose-file', ''));
+            : getSettingString(this._settings, 'compose-files', '');
 
         if (composeFilesStr) {
             let files = composeFilesStr.split(',').map(f => f.trim()).filter(Boolean);
@@ -864,7 +878,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
         let profilesStr = (this._activeProfiles !== undefined && this._activeProfiles !== null)
             ? this._activeProfiles
-            : (getSettingString(this._settings, 'active-profiles', '') || getSettingString(this._settings, 'profiles', ''));
+            : getSettingString(this._settings, 'active-profiles', '');
 
         if (profilesStr) {
             let profiles = profilesStr.split(',').map(p => p.trim()).filter(Boolean);
