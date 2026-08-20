@@ -769,11 +769,17 @@ class DockerPulseIndicator extends PanelMenu.Button {
                     this._notificationTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 0, () => {
                         this._notificationTimerId = null;
                         try {
-                            if (typeof Main !== 'undefined' && Main.notify) {
+                            if (typeof Main !== 'undefined' && Main.notifyError) {
+                                Main.notifyError("DockerPulse Warning", message);
+                            } else if (typeof Main !== 'undefined' && Main.notify) {
                                 Main.notify("DockerPulse Warning", message);
                             } else {
                                 const uiMain = imports.ui.main;
-                                uiMain.notify("DockerPulse Warning", message);
+                                if (uiMain && uiMain.notifyError) {
+                                    uiMain.notifyError("DockerPulse Warning", message);
+                                } else if (uiMain && uiMain.notify) {
+                                    uiMain.notify("DockerPulse Warning", message);
+                                }
                             }
                         } catch (err) {
                             console.error(`[DockerPulse] Failed to send consolidated notification:`, err);
