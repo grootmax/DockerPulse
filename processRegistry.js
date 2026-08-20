@@ -9,20 +9,28 @@ export class ProcessRegistry {
      * Spawns a new Gio.Subprocess, registers it, and initiates asynchronous reaping.
      * @param {string[]} argv The command line arguments
      * @param {Gio.SubprocessFlags} [flags] Optional process flags
+     * @param {string[]} [env] Optional environment variables array
      * @returns {Gio.Subprocess} The spawned subprocess
      */
-    spawn(argv, flags = Gio.SubprocessFlags.NONE) {
+    spawn(argv, flags = Gio.SubprocessFlags.NONE, env = null) {
         if (!argv || !Array.isArray(argv) || argv.length === 0) {
             throw new Error('Arguments array must be a non-empty array of strings');
         }
 
-        const proc = new Gio.Subprocess({
-            argv: argv,
-            flags: flags,
-        });
-        
-        // This actually launches the subprocess and can throw if spawning fails
-        proc.init(null);
+        let proc;
+        if (env && typeof Gio.SubprocessLauncher === 'function') {
+            const launcher = new Gio.SubprocessLauncher({ flags: flags });
+            if (typeof launcher.set_environ === 'function') {
+                launcher.set_environ(env);
+            }
+            proc = launcher.spawnv(argv);
+        } else {
+            proc = new Gio.Subprocess({
+                argv: argv,
+                flags: flags,
+            });
+            proc.init(null);
+        }
         
         this.register(proc);
         return proc;
