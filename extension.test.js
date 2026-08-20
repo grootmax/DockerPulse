@@ -237,7 +237,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                 return {
                     connect: () => 1,
                     disconnect: () => {},
-                    get_string: () => '/path/to/my-project',
+                    get_string: (key) => key === 'project-path' ? '/path/to/my-project' : '',
                     get_int: () => 25,
                     get_boolean: () => true,
                 };
@@ -555,5 +555,82 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '--filter',
             'label=com.docker.compose.project=new-project'
         ]);
+    });
+
+    test('should resolve active Docker CLI context host before falling back to local socket discovery', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        mockSubprocessStdout = '';
+
+        indicator._discoverDockerContext = jest.fn().mockResolvedValue({
+            host: 'ssh://remoteuser@remotehost',
+            certPath: '',
+            tlsVerify: ''
+        });
+
+        await indicator._discoverAndValidateEnvironment();
+
+        expect(indicator._resolvedHost).toBe('ssh://remoteuser@remotehost');
+    });
+
+    test('should fallback to local socket auto-discovery when no active remote Docker CLI context is configured', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        mockSubprocessStdout = '';
+
+        indicator._discoverDockerContext = jest.fn().mockResolvedValue(null);
+        indicator._checkFileExists = jest.fn().mockImplementation((path) => {
+            return path.includes('docker.sock');
+        });
+
+        await indicator._discoverAndValidateEnvironment();
+
+        expect(indicator._resolvedHost).toContain('unix://');
+    });
+
+    test('should discover active SSH agent socket path and forward SSH_AUTH_SOCK to subprocess environment', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        mockSubprocessStdout = '';
+
+        indicator._discoverSshAuthSock = jest.fn().mockReturnValue('/run/user/1000/keyring/ssh');
+        indicator._discoverDockerContext = jest.fn().mockResolvedValue({
+            host: 'ssh://user@remote',
+            certPath: '',
+            tlsVerify: ''
+        });
+
+        await indicator._discoverAndValidateEnvironment();
+
+        expect(indicator._resolvedSshAuthSock).toBe('/run/user/1000/keyring/ssh');
+        const env = indicator._getEnvWithResolved();
+        expect(env).toContain('SSH_AUTH_SOCK=/run/user/1000/keyring/ssh');
+        expect(env).toContain('DOCKER_HOST=ssh://user@remote');
+    });
+
+    test('should persist host parameters and diagnostic keys in settings without errors', async () => {
+        const mockSetString = jest.fn();
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        mockSubprocessStdout = '';
+        indicator._settings = {
+            set_string: mockSetString,
+            get_string: () => '',
+            get_int: () => 25,
+            get_boolean: () => false,
+            connect: () => 1,
+            disconnect: () => {}
+        };
+
+        indicator._discoverDockerContext = jest.fn().mockResolvedValue({
+            host: 'ssh://remoteuser@remotehost',
+            certPath: '/path/to/certs',
+            tlsVerify: '1'
+        });
+
+        await indicator._discoverAndValidateEnvironment();
+
+        expect(mockSetString).toHaveBeenCalledWith('diagnostic-status', expect.any(String));
+        expect(mockSetString).toHaveBeenCalledWith('diagnostic-resolved-host', 'ssh://remoteuser@remotehost');
     });
 });

@@ -46,5 +46,45 @@
       <summary>Compose Profiles</summary>
       <description>Comma-separated list of active Docker Compose v2 profile names.</description>
     </key>
+    <key name="custom-host" type="s">
+      <default>''</default>
+      <summary>Custom Docker Host</summary>
+      <description>Override Docker daemon host endpoint (e.g., unix:///var/run/docker.sock or ssh://user@host).</description>
+    </key>
+    <key name="custom-cert-path" type="s">
+      <default>''</default>
+      <summary>Custom Cert Path</summary>
+      <description>Custom path to TLS certificates for Docker daemon connection.</description>
+    </key>
+    <key name="custom-tls-verify" type="b">
+      <default>false</default>
+      <summary>Custom TLS Verify</summary>
+      <description>Enable TLS verification for custom Docker host connection.</description>
+    </key>
+    <key name="diagnostic-status" type="s">
+      <default>''</default>
+      <summary>Diagnostic Connection Status</summary>
+      <description>Last connection validation status for Docker daemon diagnostics.</description>
+    </key>
+    <key name="diagnostic-error" type="s">
+      <default>''</default>
+      <summary>Diagnostic Error Message</summary>
+      <description>Last connection validation error message for Docker daemon diagnostics.</description>
+    </key>
+    <key name="diagnostic-resolved-host" type="s">
+      <default>''</default>
+      <summary>Diagnostic Resolved Host</summary>
+      <description>Resolved Docker daemon host endpoint used for connection diagnostics.</description>
+    </key>
+    <key name="diagnostic-resolved-cert-path" type="s">
+      <default>''</default>
+      <summary>Diagnostic Resolved Cert Path</summary>
+      <description>Resolved certificate path used for connection diagnostics.</description>
+    </key>
+    <key name="diagnostic-resolved-tls-verify" type="s">
+      <default>''</default>
+      <summary>Diagnostic Resolved TLS Verify</summary>
+      <description>Resolved TLS verification status used for connection diagnostics.</description>
+    </key>
   </schema>
 </schemalist>
