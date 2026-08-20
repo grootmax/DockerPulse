@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 
 let sentNotifications = [];
 
@@ -6,10 +6,7 @@ globalThis.imports = {
     ui: {
         main: {
             notify: (title, body) => {
-                sentNotifications.push({ title, body, method: 'notify' });
-            },
-            notifyError: (msg, details) => {
-                sentNotifications.push({ title: msg, body: details, method: 'notifyError' });
+                sentNotifications.push({ title, body });
             }
         }
     }
@@ -37,6 +34,8 @@ jest.unstable_mockModule('gi://GLib', () => {
             },
             source_remove: () => {},
             get_pid: () => 12345,
+            get_user_runtime_dir: () => '/tmp',
+            get_home_dir: () => '/tmp',
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
@@ -87,10 +86,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
             addToStatusArea: () => {},
         },
         notify: (title, body) => {
-            sentNotifications.push({ title, body, method: 'notify' });
-        },
-        notifyError: (msg, details) => {
-            sentNotifications.push({ title: msg, body: details, method: 'notifyError' });
+            sentNotifications.push({ title, body });
         }
     };
 }, { virtual: true });
@@ -151,6 +147,7 @@ class MockSubprocess {
     get_stdout_pipe() {
         return {};
     }
+    force_exit() {}
     communicate_utf8_async(a, b, callback) {
         // Mock communication finishing immediately to avoid pending promises
         process.nextTick(() => {
@@ -196,6 +193,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                 }
                 wait_finish(res) { return true; }
                 get_stdout_pipe() { return {}; }
+                force_exit() {}
                 static new(argv, flags) {
                     spawnedArgvs.push(argv);
                     return new this({ argv, flags });
@@ -255,10 +253,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
             addToStatusArea: () => {},
         },
         notify: (title, body) => {
-            sentNotifications.push({ title, body, method: 'notify' });
-        },
-        notifyError: (msg, details) => {
-            sentNotifications.push({ title: msg, body: details, method: 'notifyError' });
+            sentNotifications.push({ title, body });
         }
     };
 }, { virtual: true });
@@ -349,10 +344,10 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '12345',
             'docker',
             'events',
-            '--format',
-            '{{json .}}',
             '--filter',
-            'type=container'
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=my-project'
         ]);
     });
 
@@ -445,7 +440,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => setTimeout(resolve, 50));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -465,7 +460,6 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].title).toBe('DockerPulse Warning');
         expect(sentNotifications[0].body).toBe('3 containers are unhealthy: service-web, service-db, service-redis');
-        expect(sentNotifications[0].method).toBe('notifyError');
     });
 
     test('should send a singular notification if only one container becomes unhealthy', async () => {
@@ -473,7 +467,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -496,7 +490,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -512,5 +506,54 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         // Only service-db is newly unhealthy, so we expect a singular notification for service-db
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
+    });
+
+    test('should trigger refresh on simple trigger signal without executing synchronous string/JSON parsing', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        const refreshSpy = jest.spyOn(indicator, '_triggerDebouncedRefresh').mockImplementation(() => {});
+
+        // Pass non-JSON trigger signal string
+        indicator._handleDockerEvent('1\n');
+
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        refreshSpy.mockRestore();
+    });
+
+    test('should dynamically restart background process with updated filters when project config changes', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        spawnedArgvs = [];
+
+        // Mock settings returning the new project configuration
+        indicator._settings = {
+            connect: () => 1,
+            disconnect: () => {},
+            get_string: (key) => {
+                if (key === 'project-path') return '/path/to/new-project';
+                if (key === 'project-name') return 'new-project';
+                return '';
+            },
+            get_int: () => 25,
+            get_boolean: () => true,
+        };
+
+        // Simulate settings change to a new project
+        indicator._onSettingsChanged();
+
+        expect(spawnedArgvs).toContainEqual([
+            'python3',
+            '/home/user/.local/share/gnome-shell/extensions/dockerpulse/parent_monitor_wrapper.py',
+            '--parent-pid',
+            '12345',
+            'docker',
+            'events',
+            '--filter',
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=new-project'
+        ]);
     });
 });

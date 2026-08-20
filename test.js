@@ -1,5 +1,6 @@
 // Test suite for DockerPulse logical units
 import { readFileSync } from 'fs';
+import { URL } from 'url';
 
 // Helper to extract method bodies from extension.js to test them without running GJS
 const code = readFileSync(new URL('./extension.js', import.meta.url), 'utf8');

@@ -96,6 +96,93 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
             }
         });
 
+        let composeFileVal = settings.get_string('compose-files') || settings.get_string('compose-file') || '';
+        let composeFileRow = new Adw.ActionRow({
+            title: 'Docker Compose Override File',
+            subtitle: composeFileVal || 'Default (docker-compose.yml)',
+        });
+        group.add(composeFileRow);
+
+        let selectFileButton = new Gtk.Button({
+            label: 'Select File',
+            valign: Gtk.Align.CENTER,
+        });
+        composeFileRow.add_suffix(selectFileButton);
+
+        let clearFileButton = new Gtk.Button({
+            label: 'Clear',
+            valign: Gtk.Align.CENTER,
+        });
+        composeFileRow.add_suffix(clearFileButton);
+
+        selectFileButton.connect('clicked', () => {
+            let dialog = new Gtk.FileDialog({
+                title: 'Select Docker Compose Override File',
+                select_multiple: false,
+            });
+
+            try {
+                let filter = new Gtk.FileFilter();
+                filter.set_name('Docker Compose files (*.yml, *.yaml)');
+                filter.add_pattern('*.yml');
+                filter.add_pattern('*.yaml');
+
+                let filters = new Gio.ListStore({ item_type: Gtk.FileFilter });
+                filters.append(filter);
+                dialog.set_filters(filters);
+            } catch (e) {
+                // Ignore filter setup error if types mismatch in test mocks
+            }
+
+            dialog.open(window, null, (obj, res) => {
+                try {
+                    let file = dialog.open_finish(res);
+                    if (file) {
+                        let path = file.get_path();
+                        settings.set_string('compose-files', path);
+                        try {
+                            settings.set_string('compose-file', path);
+                        } catch (e) {}
+                        composeFileRow.set_subtitle(path);
+                    }
+                } catch (e) {
+                    console.error('[DockerPulse] Error selecting compose file:', e);
+                }
+            });
+        });
+
+        clearFileButton.connect('clicked', () => {
+            try {
+                settings.set_string('compose-files', '');
+                try {
+                    settings.set_string('compose-file', '');
+                } catch (e) {}
+                composeFileRow.set_subtitle('Default (docker-compose.yml)');
+            } catch (e) {
+                console.error('[DockerPulse] Error clearing compose file:', e);
+            }
+        });
+
+        let profilesVal = settings.get_string('active-profiles') || settings.get_string('profiles') || '';
+        let profilesRow = new Adw.EntryRow({
+            title: 'Active Profiles',
+            text: profilesVal,
+            placeholder_text: 'e.g. dev, debug (comma-separated)',
+        });
+        group.add(profilesRow);
+
+        profilesRow.connect('changed', () => {
+            try {
+                let val = profilesRow.get_text().trim();
+                settings.set_string('active-profiles', val);
+                try {
+                    settings.set_string('profiles', val);
+                } catch (e) {}
+            } catch (e) {
+                console.error('[DockerPulse] Error saving active-profiles:', e);
+            }
+        });
+
         let adj = new Gtk.Adjustment({
             value: settings.get_int('poll-interval') || 25,
             lower: 5,

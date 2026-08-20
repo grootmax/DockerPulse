@@ -4,8 +4,17 @@ import os
 import time
 import subprocess
 import signal
+import threading
 
 child_proc = None
+
+def forward_triggers(proc):
+    try:
+        for _ in proc.stdout:
+            sys.stdout.write("1\n")
+            sys.stdout.flush()
+    except Exception:
+        pass
 
 def get_libc():
     import ctypes
@@ -92,10 +101,13 @@ def main():
     
     # Spawn child process
     try:
-        child_proc = subprocess.Popen(cmd_args, preexec_fn=set_pdeathsig)
+        child_proc = subprocess.Popen(cmd_args, stdout=subprocess.PIPE, stderr=sys.stderr, text=True, bufsize=1, preexec_fn=set_pdeathsig)
     except Exception as e:
         print(f"Error spawning child process: {e}", file=sys.stderr)
         sys.exit(1)
+        
+    trigger_thread = threading.Thread(target=forward_triggers, args=(child_proc,), daemon=True)
+    trigger_thread.start()
         
     # Monitor loop
     try:
