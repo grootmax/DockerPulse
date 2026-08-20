@@ -142,6 +142,7 @@ class MockSubprocess {
         this.argv = argv;
         this.stdout = mockSubprocessStdout;
     }
+    force_exit() {}
     get_stdout_pipe() {
         return {};
     }
@@ -502,5 +503,77 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         // Only service-db is newly unhealthy, so we expect a singular notification for service-db
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
+    });
+
+    test('should safely handle structured object and non-string health payloads during state refresh', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        await new Promise(resolve => process.nextTick(resolve));
+        sentNotifications = [];
+
+        indicator._projectPath = '/path/to/my-project';
+
+        mockSubprocessStdout = JSON.stringify([
+            { Name: 'service-web', State: 'running', Health: { Status: 'healthy' } },
+            { Name: 'service-db', State: 'running', Health: { Status: 'unhealthy' } },
+            { Name: 'service-redis', State: 'running', Health: true },
+            { Name: 'service-api', State: 'running', Health: null }
+        ]);
+
+        await indicator._refreshState();
+
+        expect(indicator._cachedStatus).not.toBe('grey');
+        expect(indicator._cachedContainers.length).toBe(4);
+        expect(indicator._state.activeCount).toBe(3); // 3 active (web, redis, api), 1 unhealthy (db)
+        expect(indicator._state.status).toBe('yellow'); // 3 active out of 4 total
+
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
+    });
+
+    test('should render menu items cleanly for structured object and undefined health properties', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        await new Promise(resolve => process.nextTick(resolve));
+
+        indicator._projectPath = '/path/to/my-project';
+        indicator._cachedStatus = 'yellow';
+        indicator._state = Object.freeze({
+            containers: [
+                { Name: 'web', State: 'running', Status: 'Up 2 hours', Health: { Status: 'healthy' } },
+                { Name: 'db', State: 'running', Status: 'Up 2 hours', Health: { Status: 'unhealthy' } },
+                { Name: 'cache', State: 'running', Status: 'Up 2 hours', Health: { status: 'starting' } },
+                { Name: 'worker', State: 'running', Status: 'Up 2 hours' }
+            ],
+            status: 'yellow',
+            projectName: 'my-project',
+            activeCount: 3,
+            totalCount: 4
+        });
+
+        popupSubMenuItems = [];
+        indicator._buildMenu();
+
+        const webItem = popupSubMenuItems.find(item => item.label_text.includes('web'));
+        const dbItem = popupSubMenuItems.find(item => item.label_text.includes('db'));
+        const cacheItem = popupSubMenuItems.find(item => item.label_text.includes('cache'));
+        const workerItem = popupSubMenuItems.find(item => item.label_text.includes('worker'));
+
+        expect(webItem).toBeDefined();
+        expect(webItem.label_text).toContain('🟢');
+        expect(webItem.label_text).not.toContain('[object Object]');
+
+        expect(dbItem).toBeDefined();
+        expect(dbItem.label_text).toContain('⚠️');
+        expect(dbItem.label_text).toContain('(unhealthy)');
+
+        expect(cacheItem).toBeDefined();
+        expect(cacheItem.label_text).toContain('🟡');
+        expect(cacheItem.label_text).toContain('(starting)');
+
+        expect(workerItem).toBeDefined();
+        expect(workerItem.label_text).toContain('🟢');
     });
 });

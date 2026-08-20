@@ -63,11 +63,52 @@ function setEnvironVar(env, key, value) {
     return filtered;
 }
 
+function extractHealthValue(val) {
+    if (val === null || val === undefined) {
+        return '';
+    }
+    if (typeof val === 'string') {
+        return val;
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') {
+        return String(val);
+    }
+    if (typeof val === 'object') {
+        let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+        if (candidate !== undefined && candidate !== null) {
+            return extractHealthValue(candidate);
+        }
+        return '';
+    }
+    return '';
+}
+
+function extractStringValue(val) {
+    if (val === null || val === undefined) {
+        return '';
+    }
+    if (typeof val === 'string') {
+        return val;
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') {
+        return String(val);
+    }
+    if (typeof val === 'object') {
+        let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+        if (candidate !== undefined && candidate !== null) {
+            return extractStringValue(candidate);
+        }
+        return '';
+    }
+    return '';
+}
+
 const DockerPulseIndicator = GObject.registerClass(
 class DockerPulseIndicator extends PanelMenu.Button {
     _init(extension) {
         super._init(0.0, 'DockerPulse');
         this._extension = extension;
+        this._destroyed = false;
         
         try {
             this._settings = extension.getSettings();
@@ -153,6 +194,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
             // Trigger background environment discovery and diagnostics
             this._discoverAndValidateEnvironment().then(() => {
+                if (this._destroyed) return;
                 this._stopEventStream();
                 this._startEventStream();
                 this._refreshState();
@@ -532,8 +574,38 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _isContainerActive(item) {
-        let state = (item.State || item.state || '').toLowerCase();
-        let health = (item.Health || item.health || '').toLowerCase();
+        if (!item || typeof item !== 'object') return false;
+
+        const getHealthVal = (val) => {
+            if (val === null || val === undefined) return '';
+            if (typeof val === 'string') return val;
+            if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+            if (typeof val === 'object') {
+                let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+                if (candidate !== undefined && candidate !== null) {
+                    return getHealthVal(candidate);
+                }
+                return '';
+            }
+            return '';
+        };
+
+        const getStringVal = (val) => {
+            if (val === null || val === undefined) return '';
+            if (typeof val === 'string') return val;
+            if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+            if (typeof val === 'object') {
+                let candidate = val.Status ?? val.status ?? val.State ?? val.state ?? val.Value ?? val.value ?? val.Health ?? val.health;
+                if (candidate !== undefined && candidate !== null) {
+                    return getStringVal(candidate);
+                }
+                return '';
+            }
+            return '';
+        };
+
+        let state = getStringVal(item.State !== undefined ? item.State : item.state).toLowerCase().trim();
+        let health = getHealthVal(item.Health !== undefined ? item.Health : item.health).toLowerCase().trim();
         let active = state === 'running' || state === 'up';
         if (active) {
             return health !== 'unhealthy';
@@ -582,6 +654,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     async _refreshState() {
+        if (this._destroyed) return;
         if (!this._projectPath) {
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
@@ -639,10 +712,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 let total = containers.length;
 
                 containers.forEach(item => {
-                    if (!item) return;
-                    let name = item.Name || item.name || '';
-                    let state = (item.State || item.state || '').toLowerCase();
-                    let health = (item.Health || item.health || '').toLowerCase();
+                    if (!item || typeof item !== 'object') return;
+                    let name = extractStringValue(item.Name !== undefined ? item.Name : item.name);
+                    let state = extractStringValue(item.State !== undefined ? item.State : item.state).toLowerCase().trim();
+                    let health = extractHealthValue(item.Health !== undefined ? item.Health : item.health).toLowerCase().trim();
                     
                     if ((state === 'running' || state === 'up') && health === 'unhealthy') {
                         currentUnhealthy.add(name);
@@ -831,18 +904,14 @@ class DockerPulseIndicator extends PanelMenu.Button {
             this.menu.addMenuItem(emptyItem);
         } else {
             this._state.containers.forEach(item => {
-                if (!item) return;
-                let name = item.Name || item.name || 'container';
-                let service = item.Service || item.service || name;
-                let state = (item.State || item.state || '').toLowerCase();
-                let status = item.Status || item.status || state;
+                if (!item || typeof item !== 'object') return;
+                let name = extractStringValue(item.Name !== undefined ? item.Name : item.name) || 'container';
+                let service = extractStringValue(item.Service !== undefined ? item.Service : item.service) || name;
+                let state = extractStringValue(item.State !== undefined ? item.State : item.state).toLowerCase().trim();
+                let rawStatus = item.Status !== undefined ? item.Status : item.status;
+                let status = extractStringValue(rawStatus) || state;
 
-                let health = '';
-                if (item.Health !== undefined && item.Health !== null) {
-                    health = String(item.Health).toLowerCase();
-                } else if (item.health !== undefined && item.health !== null) {
-                    health = String(item.health).toLowerCase();
-                }
+                let health = extractHealthValue(item.Health !== undefined ? item.Health : item.health).toLowerCase().trim();
 
                 let stateEmoji = '⚪';
                 let healthLabel = '';
@@ -1019,6 +1088,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        this._destroyed = true;
         this._stopEventStream();
         if (this._settings && this._settingsId) {
             this._settings.disconnect(this._settingsId);
