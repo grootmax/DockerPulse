@@ -163,7 +163,7 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
             }
         });
 
-        let profilesVal = settings.get_string('active-profiles') || settings.get_string('profiles') || '';
+        let profilesVal = settings.get_string('compose-profiles') || settings.get_string('active-profiles') || settings.get_string('profiles') || '';
         let profilesRow = new Adw.EntryRow({
             title: 'Active Profiles',
             text: profilesVal,
@@ -177,6 +177,9 @@ export default class DockerPulsePreferences extends ExtensionPreferences {
                 settings.set_string('active-profiles', val);
                 try {
                     settings.set_string('profiles', val);
+                } catch (e) {}
+                try {
+                    settings.set_string('compose-profiles', val);
                 } catch (e) {}
             } catch (e) {
                 console.error('[DockerPulse] Error saving active-profiles:', e);

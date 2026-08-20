@@ -46,5 +46,10 @@
       <summary>Compose Profiles</summary>
       <description>Comma-separated list of active Docker Compose v2 profile names.</description>
     </key>
+    <key name="compose-profiles" type="s">
+      <default>''</default>
+      <summary>Active Compose Profiles</summary>
+      <description>Comma-separated profile names for Docker Compose.</description>
+    </key>
   </schema>
 </schemalist>
