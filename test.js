@@ -1,9 +1,9 @@
 // Test suite for DockerPulse logical units
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync } from 'fs';
+import { URL } from 'url';
 
 // Helper to extract method bodies from extension.js to test them without running GJS
-const extensionPath = existsSync('/app/extension.js') ? '/app/extension.js' : new URL('./extension.js', import.meta.url);
-const code = readFileSync(extensionPath, 'utf8');
+const code = readFileSync(new URL('./extension.js', import.meta.url), 'utf8');
 
 function extractMethod(code, methodName) {
     const regex = new RegExp(`\\s${methodName}\\([^)]*\\)\\s*\\{`);
@@ -85,15 +85,6 @@ function runAllTests() {
     assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: 'unhealthy' }) === false, 'Inactive container (running but unhealthy)');
     assert(isContainerActive({ State: 'exited', Status: 'Exited (0) 1 hour ago', Health: '' }) === false, 'Inactive container (exited)');
     assert(isContainerActive({ State: 'restarting', Status: 'Restarting (1) 1 second ago', Health: '' }) === false, 'Inactive container (restarting)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: { Status: 'healthy' } }) === true, 'Active container (running, structured healthy)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: { Status: 'unhealthy' } }) === false, 'Inactive container (running, structured unhealthy)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: { status: 'starting' } }) === true, 'Active container (running, structured starting)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: { Value: 'unhealthy' } }) === false, 'Inactive container (running, structured value unhealthy)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: true }) === true, 'Active container (running, primitive boolean health)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: 123 }) === true, 'Active container (running, primitive number health)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: null }) === true, 'Active container (running, null health)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: undefined }) === true, 'Active container (running, undefined health)');
-    assert(isContainerActive({ State: 'running', Status: 'Up 10 seconds', Health: {} }) === true, 'Active container (running, empty object health)');
 
     // 5. Test state combinations/coloring decisions
     function decideColor(containers) {

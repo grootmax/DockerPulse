@@ -185,7 +185,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             // Determine project name from settings, fallback to path, then "DockerPulse"
             let nameSetting = getSettingString(this._settings, 'project-name', '');
             if (nameSetting) {
-                this._cachedProjectName = nameSetting;
+                this._cachedProjectName = nameSetting.split('/').pop();
             } else {
                 this._cachedProjectName = this._projectPath.split('/').pop() || 'DockerPulse';
             }
@@ -429,11 +429,19 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 launcher.set_environ(env);
             }
             
+            // Determine project name from settings, fallback to path, then "DockerPulse"
+            let projectName = this._cachedProjectName;
+            if (!projectName && this._projectPath) {
+                let nameSetting = getSettingString(this._settings, 'project-name', '');
+                projectName = (nameSetting ? nameSetting.split('/').pop() : '') || (this._projectPath.split('/').pop() || 'DockerPulse');
+                this._cachedProjectName = projectName;
+            }
+
             // Get current parent PID and path to wrapper
             let parentPid = GLib.get_pid().toString();
             let wrapperPath = this._extension.path + '/parent_monitor_wrapper.py';
 
-            // Stream container events within the self-terminating wrapper
+            // Stream container events within the self-terminating wrapper with native daemon filter
             let argv = [
                 'python3',
                 wrapperPath,
@@ -441,10 +449,10 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 parentPid,
                 'docker',
                 'events',
-                '--format',
-                '{{json .}}',
                 '--filter',
-                'type=container'
+                'type=container',
+                '--filter',
+                `label=com.docker.compose.project=${projectName}`
             ];
             this._eventProc = launcher.spawnv(argv);
             if (this._extension && this._extension._registry) {
@@ -470,7 +478,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
             try {
                 let [line, length] = stream.read_line_finish_utf8(res);
                 if (line !== null) {
-                    this._handleDockerEvent(line);
+                    this._triggerDebouncedRefresh();
                     this._readLine(stream);
                 } else {
                     // Subprocess exited
@@ -514,32 +522,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _handleDockerEvent(line) {
-        try {
-            let event = JSON.parse(line.trim());
-            // Filter events to check if they belong to this project
-            let attributes = (event.Actor && event.Actor.Attributes) || {};
-            let project = attributes['com.docker.compose.project'];
-            let workingDir = attributes['com.docker.compose.project.working_dir'] ||
-                             attributes['com.docker.compose.working_dir'] ||
-                             attributes['com.docker.compose.working-dir'] ||
-                             attributes['com.docker.compose.project.working-dir'];
-
-            let matches = false;
-            if (project && this._cachedProjectName && project.toLowerCase() === this._cachedProjectName.toLowerCase()) {
-                matches = true;
-            } else if (workingDir && workingDir === this._projectPath) {
-                matches = true;
-            } else if (!project && !workingDir) {
-                // If we couldn't filter by project attributes, trigger refresh to be safe
-                matches = true;
-            }
-
-            if (matches) {
-                this._triggerDebouncedRefresh();
-            }
-        } catch (e) {
-            // JSON parsing or filtering error
-        }
+        this._triggerDebouncedRefresh();
     }
 
     _triggerDebouncedRefresh() {

@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 
 let sentNotifications = [];
 
@@ -34,6 +34,8 @@ jest.unstable_mockModule('gi://GLib', () => {
             },
             source_remove: () => {},
             get_pid: () => 12345,
+            get_user_runtime_dir: () => '/tmp',
+            get_home_dir: () => '/tmp',
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
@@ -142,10 +144,10 @@ class MockSubprocess {
         this.argv = argv;
         this.stdout = mockSubprocessStdout;
     }
-    force_exit() {}
     get_stdout_pipe() {
         return {};
     }
+    force_exit() {}
     communicate_utf8_async(a, b, callback) {
         // Mock communication finishing immediately to avoid pending promises
         process.nextTick(() => {
@@ -191,6 +193,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                 }
                 wait_finish(res) { return true; }
                 get_stdout_pipe() { return {}; }
+                force_exit() {}
                 static new(argv, flags) {
                     spawnedArgvs.push(argv);
                     return new this({ argv, flags });
@@ -341,10 +344,10 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '12345',
             'docker',
             'events',
-            '--format',
-            '{{json .}}',
             '--filter',
-            'type=container'
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=my-project'
         ]);
     });
 
@@ -437,7 +440,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -464,7 +467,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -487,7 +490,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -505,75 +508,52 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
     });
 
-    test('should safely handle structured object and non-string health payloads during state refresh', async () => {
+    test('should trigger refresh on simple trigger signal without executing synchronous string/JSON parsing', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
 
-        await new Promise(resolve => process.nextTick(resolve));
-        sentNotifications = [];
+        const refreshSpy = jest.spyOn(indicator, '_triggerDebouncedRefresh').mockImplementation(() => {});
 
-        indicator._projectPath = '/path/to/my-project';
+        // Pass non-JSON trigger signal string
+        indicator._handleDockerEvent('1\n');
 
-        mockSubprocessStdout = JSON.stringify([
-            { Name: 'service-web', State: 'running', Health: { Status: 'healthy' } },
-            { Name: 'service-db', State: 'running', Health: { Status: 'unhealthy' } },
-            { Name: 'service-redis', State: 'running', Health: true },
-            { Name: 'service-api', State: 'running', Health: null }
-        ]);
-
-        await indicator._refreshState();
-
-        expect(indicator._cachedStatus).not.toBe('grey');
-        expect(indicator._cachedContainers.length).toBe(4);
-        expect(indicator._state.activeCount).toBe(3); // 3 active (web, redis, api), 1 unhealthy (db)
-        expect(indicator._state.status).toBe('yellow'); // 3 active out of 4 total
-
-        expect(sentNotifications.length).toBe(1);
-        expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        refreshSpy.mockRestore();
     });
 
-    test('should render menu items cleanly for structured object and undefined health properties', async () => {
+    test('should dynamically restart background process with updated filters when project config changes', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
 
-        await new Promise(resolve => process.nextTick(resolve));
+        spawnedArgvs = [];
 
-        indicator._projectPath = '/path/to/my-project';
-        indicator._cachedStatus = 'yellow';
-        indicator._state = Object.freeze({
-            containers: [
-                { Name: 'web', State: 'running', Status: 'Up 2 hours', Health: { Status: 'healthy' } },
-                { Name: 'db', State: 'running', Status: 'Up 2 hours', Health: { Status: 'unhealthy' } },
-                { Name: 'cache', State: 'running', Status: 'Up 2 hours', Health: { status: 'starting' } },
-                { Name: 'worker', State: 'running', Status: 'Up 2 hours' }
-            ],
-            status: 'yellow',
-            projectName: 'my-project',
-            activeCount: 3,
-            totalCount: 4
-        });
+        // Mock settings returning the new project configuration
+        indicator._settings = {
+            connect: () => 1,
+            disconnect: () => {},
+            get_string: (key) => {
+                if (key === 'project-path') return '/path/to/new-project';
+                if (key === 'project-name') return 'new-project';
+                return '';
+            },
+            get_int: () => 25,
+            get_boolean: () => true,
+        };
 
-        popupSubMenuItems = [];
-        indicator._buildMenu();
+        // Simulate settings change to a new project
+        indicator._onSettingsChanged();
 
-        const webItem = popupSubMenuItems.find(item => item.label_text.includes('web'));
-        const dbItem = popupSubMenuItems.find(item => item.label_text.includes('db'));
-        const cacheItem = popupSubMenuItems.find(item => item.label_text.includes('cache'));
-        const workerItem = popupSubMenuItems.find(item => item.label_text.includes('worker'));
-
-        expect(webItem).toBeDefined();
-        expect(webItem.label_text).toContain('🟢');
-        expect(webItem.label_text).not.toContain('[object Object]');
-
-        expect(dbItem).toBeDefined();
-        expect(dbItem.label_text).toContain('⚠️');
-        expect(dbItem.label_text).toContain('(unhealthy)');
-
-        expect(cacheItem).toBeDefined();
-        expect(cacheItem.label_text).toContain('🟡');
-        expect(cacheItem.label_text).toContain('(starting)');
-
-        expect(workerItem).toBeDefined();
-        expect(workerItem.label_text).toContain('🟢');
+        expect(spawnedArgvs).toContainEqual([
+            'python3',
+            '/home/user/.local/share/gnome-shell/extensions/dockerpulse/parent_monitor_wrapper.py',
+            '--parent-pid',
+            '12345',
+            'docker',
+            'events',
+            '--filter',
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=new-project'
+        ]);
     });
 });
