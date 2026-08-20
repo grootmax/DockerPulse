@@ -2,7 +2,7 @@
 import { readFileSync } from 'fs';
 
 // Helper to extract method bodies from extension.js to test them without running GJS
-const code = readFileSync('/app/extension.js', 'utf8');
+const code = readFileSync(new URL('./extension.js', import.meta.url), 'utf8');
 
 function extractMethod(code, methodName) {
     const regex = new RegExp(`\\s${methodName}\\([^)]*\\)\\s*\\{`);

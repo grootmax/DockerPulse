@@ -6,7 +6,10 @@ globalThis.imports = {
     ui: {
         main: {
             notify: (title, body) => {
-                sentNotifications.push({ title, body });
+                sentNotifications.push({ title, body, method: 'notify' });
+            },
+            notifyError: (msg, details) => {
+                sentNotifications.push({ title: msg, body: details, method: 'notifyError' });
             }
         }
     }
@@ -84,7 +87,10 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
             addToStatusArea: () => {},
         },
         notify: (title, body) => {
-            sentNotifications.push({ title, body });
+            sentNotifications.push({ title, body, method: 'notify' });
+        },
+        notifyError: (msg, details) => {
+            sentNotifications.push({ title: msg, body: details, method: 'notifyError' });
         }
     };
 }, { virtual: true });
@@ -249,7 +255,10 @@ jest.unstable_mockModule('resource:///org/gnome/shell/ui/main.js', () => {
             addToStatusArea: () => {},
         },
         notify: (title, body) => {
-            sentNotifications.push({ title, body });
+            sentNotifications.push({ title, body, method: 'notify' });
+        },
+        notifyError: (msg, details) => {
+            sentNotifications.push({ title: msg, body: details, method: 'notifyError' });
         }
     };
 }, { virtual: true });
@@ -436,7 +445,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        await new Promise(resolve => setTimeout(resolve, 50));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -456,6 +465,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].title).toBe('DockerPulse Warning');
         expect(sentNotifications[0].body).toBe('3 containers are unhealthy: service-web, service-db, service-redis');
+        expect(sentNotifications[0].method).toBe('notifyError');
     });
 
     test('should send a singular notification if only one container becomes unhealthy', async () => {
