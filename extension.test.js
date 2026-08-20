@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals';
+import { jest, beforeEach, afterEach, describe, test, expect } from '@jest/globals';
 
 let sentNotifications = [];
 
@@ -34,6 +34,8 @@ jest.unstable_mockModule('gi://GLib', () => {
             },
             source_remove: () => {},
             get_pid: () => 12345,
+            get_user_runtime_dir: () => '/tmp',
+            get_home_dir: () => '/tmp',
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
@@ -233,7 +235,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                 return {
                     connect: () => 1,
                     disconnect: () => {},
-                    get_string: () => '/path/to/my-project',
+                    get_string: (key) => (key === 'project-path' ? '/path/to/my-project' : ''),
                     get_int: () => 25,
                     get_boolean: () => true,
                 };
@@ -436,7 +438,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        await new Promise(resolve => globalThis.setTimeout(resolve, 50));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -502,5 +504,102 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         // Only service-db is newly unhealthy, so we expect a singular notification for service-db
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
+    });
+});
+
+describe('Explicit CLI Flags & Preferences', () => {
+    let extensionInstance;
+
+    beforeEach(() => {
+        extensionInstance = new DockerPulseExtension();
+        extensionInstance.path = '/home/user/.local/share/gnome-shell/extensions/dockerpulse';
+        extensionInstance.uuid = 'dockerpulse@github.com';
+    });
+
+    afterEach(() => {
+        if (extensionInstance) {
+            extensionInstance.disable();
+        }
+    });
+
+    test('should build compose flags correctly for custom files and profiles', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        indicator._composeFiles = 'docker-compose.override.yml, docker-compose.prod.yml';
+        indicator._activeProfiles = 'dev, debug';
+
+        const flags = indicator._getComposeFlags();
+        expect(flags).toEqual([
+            '-f', 'docker-compose.override.yml',
+            '-f', 'docker-compose.prod.yml',
+            '--profile', 'dev',
+            '--profile', 'debug'
+        ]);
+
+        const fullCmd = indicator._buildComposeCommand(['docker', 'compose', 'ps', '-a', '--format', 'json']);
+        expect(fullCmd).toEqual([
+            'docker', 'compose',
+            '-f', 'docker-compose.override.yml',
+            '-f', 'docker-compose.prod.yml',
+            '--profile', 'dev',
+            '--profile', 'debug',
+            'ps', '-a', '--format', 'json'
+        ]);
+    });
+
+    test('should include explicit -f and --profile flags during state polling refresh', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+        indicator._composeFiles = 'custom-override.yml';
+        indicator._activeProfiles = 'backend';
+
+        spawnedArgvs = [];
+        await indicator._refreshState();
+
+        const psCmd = spawnedArgvs.find(argv => Array.isArray(argv) && argv.includes('ps'));
+        expect(psCmd).toBeDefined();
+        expect(psCmd).toEqual([
+            'docker', 'compose',
+            '-f', 'custom-override.yml',
+            '--profile', 'backend',
+            'ps', '-a', '--format', 'json'
+        ]);
+    });
+
+    test('should include explicit -f and --profile flags in stack control actions', async () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+        indicator._composeFiles = 'docker-compose.override.yml';
+        indicator._activeProfiles = 'frontend';
+
+        spawnedArgvs = [];
+        await indicator._runStackCommand(['docker', 'compose', 'up', '-d']);
+
+        expect(spawnedArgvs[0]).toEqual([
+            'docker', 'compose',
+            '-f', 'docker-compose.override.yml',
+            '--profile', 'frontend',
+            'up', '-d'
+        ]);
+    });
+
+    test('should include explicit -f and --profile flags in terminal action launchers', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+        indicator._composeFiles = 'docker-compose.override.yml';
+        indicator._activeProfiles = 'dev';
+
+        spawnedArgvs = [];
+        indicator._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', 'web']);
+
+        expect(spawnedArgvs[0]).toEqual([
+            'ptyxis',
+            '--working-directory', '/path/to/my-project',
+            '-e', 'docker compose -f docker-compose.override.yml --profile dev logs -f web'
+        ]);
     });
 });

@@ -133,6 +133,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _onSettingsChanged() {
         this._projectPath = getSettingString(this._settings, 'project-path', '');
         this._showContainerCount = getSettingBool(this._settings, 'show-container-count', true);
+        this._composeFiles = getSettingString(this._settings, 'compose-files', '') || getSettingString(this._settings, 'compose-file', '');
+        this._activeProfiles = getSettingString(this._settings, 'active-profiles', '') || getSettingString(this._settings, 'profiles', '');
         
         // Stop current stream
         this._stopEventStream();
@@ -581,6 +583,47 @@ class DockerPulseIndicator extends PanelMenu.Button {
         });
     }
 
+    _getComposeFlags() {
+        let flags = [];
+
+        let composeFilesStr = (this._composeFiles !== undefined && this._composeFiles !== null)
+            ? this._composeFiles
+            : (getSettingString(this._settings, 'compose-files', '') || getSettingString(this._settings, 'compose-file', ''));
+
+        if (composeFilesStr) {
+            let files = composeFilesStr.split(',').map(f => f.trim()).filter(Boolean);
+            for (let file of files) {
+                flags.push('-f', file);
+            }
+        }
+
+        let profilesStr = (this._activeProfiles !== undefined && this._activeProfiles !== null)
+            ? this._activeProfiles
+            : (getSettingString(this._settings, 'active-profiles', '') || getSettingString(this._settings, 'profiles', ''));
+
+        if (profilesStr) {
+            let profiles = profilesStr.split(',').map(p => p.trim()).filter(Boolean);
+            for (let profile of profiles) {
+                flags.push('--profile', profile);
+            }
+        }
+
+        return flags;
+    }
+
+    _buildComposeCommand(commandArgs) {
+        if (!Array.isArray(commandArgs)) return commandArgs;
+        let flags = this._getComposeFlags();
+        if (!flags || flags.length === 0) {
+            return commandArgs;
+        }
+
+        if (commandArgs[0] === 'docker' && commandArgs[1] === 'compose') {
+            return ['docker', 'compose', ...flags, ...commandArgs.slice(2)];
+        }
+        return ['docker', 'compose', ...flags, ...commandArgs];
+    }
+
     async _refreshState() {
         if (!this._projectPath) {
             this._cachedContainers = [];
@@ -609,7 +652,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 launcher.set_environ(env);
             }
             // Run docker compose ps -a --format json
-            let argv = ['docker', 'compose', 'ps', '-a', '--format', 'json'];
+            let argv = this._buildComposeCommand(['docker', 'compose', 'ps', '-a', '--format', 'json']);
             let proc = launcher.spawnv(argv);
             if (this._extension && this._extension._registry) {
                 this._extension._registry.register(proc);
@@ -937,7 +980,8 @@ class DockerPulseIndicator extends PanelMenu.Button {
             if (typeof launcher.set_environ === 'function') {
                 launcher.set_environ(env);
             }
-            let proc = launcher.spawnv(argv);
+            let fullCommand = this._buildComposeCommand(argv);
+            let proc = launcher.spawnv(fullCommand);
             
             // Wait for the stack action process to complete asynchronously (non-blocking)
             await new Promise((resolve) => {
@@ -961,28 +1005,30 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _spawnTerminalCommand(commandArgs) {
         if (!this._projectPath) return;
 
+        let fullCommand = this._buildComposeCommand(commandArgs);
+
         let ptyxisArgs = [
             'ptyxis',
             '--working-directory', this._projectPath,
-            '-e', commandArgs.join(' '),
+            '-e', fullCommand.join(' '),
         ];
 
         let gnomeTerminalArgs = [
             'gnome-terminal',
             `--working-directory=${this._projectPath}`,
             '--',
-        ].concat(commandArgs);
+        ].concat(fullCommand);
 
         let kgxArgs = [
             'kgx',
             '--working-directory', this._projectPath,
-            '-e', commandArgs.join(' '),
+            '-e', fullCommand.join(' '),
         ];
 
         let xtermArgs = [
             'xterm',
             '-wdir', this._projectPath,
-            '-e', commandArgs.join(' '),
+            '-e', fullCommand.join(' '),
         ];
 
         let spawnWithEnv = (args) => {
