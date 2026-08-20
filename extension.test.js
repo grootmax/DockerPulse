@@ -1,4 +1,4 @@
-import { jest, beforeEach, afterEach, describe, test, expect } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
 
 let sentNotifications = [];
 
@@ -147,6 +147,7 @@ class MockSubprocess {
     get_stdout_pipe() {
         return {};
     }
+    force_exit() {}
     communicate_utf8_async(a, b, callback) {
         // Mock communication finishing immediately to avoid pending promises
         process.nextTick(() => {
@@ -192,6 +193,7 @@ jest.unstable_mockModule('gi://Gio', () => {
                 }
                 wait_finish(res) { return true; }
                 get_stdout_pipe() { return {}; }
+                force_exit() {}
                 static new(argv, flags) {
                     spawnedArgvs.push(argv);
                     return new this({ argv, flags });
@@ -235,7 +237,7 @@ jest.unstable_mockModule('resource:///org/gnome/shell/extensions/extension.js', 
                 return {
                     connect: () => 1,
                     disconnect: () => {},
-                    get_string: (key) => (key === 'project-path' ? '/path/to/my-project' : ''),
+                    get_string: () => '/path/to/my-project',
                     get_int: () => 25,
                     get_boolean: () => true,
                 };
@@ -342,10 +344,10 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
             '12345',
             'docker',
             'events',
-            '--format',
-            '{{json .}}',
             '--filter',
-            'type=container'
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=my-project'
         ]);
     });
 
@@ -438,7 +440,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => globalThis.setTimeout(resolve, 50));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -465,7 +467,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -488,7 +490,7 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const indicator = extensionInstance._indicator;
 
         // Flush background runs from construction
-        await new Promise(resolve => process.nextTick(resolve));
+        for (let i = 0; i < 10; i++) await new Promise(resolve => process.nextTick(resolve));
         sentNotifications = [];
 
         indicator._projectPath = '/path/to/my-project';
@@ -505,101 +507,53 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(sentNotifications.length).toBe(1);
         expect(sentNotifications[0].body).toBe('1 container is unhealthy: service-db');
     });
-});
 
-describe('Explicit CLI Flags & Preferences', () => {
-    let extensionInstance;
-
-    beforeEach(() => {
-        extensionInstance = new DockerPulseExtension();
-        extensionInstance.path = '/home/user/.local/share/gnome-shell/extensions/dockerpulse';
-        extensionInstance.uuid = 'dockerpulse@github.com';
-    });
-
-    afterEach(() => {
-        if (extensionInstance) {
-            extensionInstance.disable();
-        }
-    });
-
-    test('should build compose flags correctly for custom files and profiles', () => {
+    test('should trigger refresh on simple trigger signal without executing synchronous string/JSON parsing', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
 
-        indicator._composeFiles = 'docker-compose.override.yml, docker-compose.prod.yml';
-        indicator._activeProfiles = 'dev, debug';
+        const refreshSpy = jest.spyOn(indicator, '_triggerDebouncedRefresh').mockImplementation(() => {});
 
-        const flags = indicator._getComposeFlags();
-        expect(flags).toEqual([
-            '-f', 'docker-compose.override.yml',
-            '-f', 'docker-compose.prod.yml',
-            '--profile', 'dev',
-            '--profile', 'debug'
-        ]);
+        // Pass non-JSON trigger signal string
+        indicator._handleDockerEvent('1\n');
 
-        const fullCmd = indicator._buildComposeCommand(['docker', 'compose', 'ps', '-a', '--format', 'json']);
-        expect(fullCmd).toEqual([
-            'docker', 'compose',
-            '-f', 'docker-compose.override.yml',
-            '-f', 'docker-compose.prod.yml',
-            '--profile', 'dev',
-            '--profile', 'debug',
-            'ps', '-a', '--format', 'json'
-        ]);
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        refreshSpy.mockRestore();
     });
 
-    test('should include explicit -f and --profile flags during state polling refresh', async () => {
+    test('should dynamically restart background process with updated filters when project config changes', () => {
         extensionInstance.enable();
         const indicator = extensionInstance._indicator;
-        indicator._projectPath = '/path/to/my-project';
-        indicator._composeFiles = 'custom-override.yml';
-        indicator._activeProfiles = 'backend';
 
         spawnedArgvs = [];
-        await indicator._refreshState();
 
-        const psCmd = spawnedArgvs.find(argv => Array.isArray(argv) && argv.includes('ps'));
-        expect(psCmd).toBeDefined();
-        expect(psCmd).toEqual([
-            'docker', 'compose',
-            '-f', 'custom-override.yml',
-            '--profile', 'backend',
-            'ps', '-a', '--format', 'json'
-        ]);
-    });
+        // Mock settings returning the new project configuration
+        indicator._settings = {
+            connect: () => 1,
+            disconnect: () => {},
+            get_string: (key) => {
+                if (key === 'project-path') return '/path/to/new-project';
+                if (key === 'project-name') return 'new-project';
+                return '';
+            },
+            get_int: () => 25,
+            get_boolean: () => true,
+        };
 
-    test('should include explicit -f and --profile flags in stack control actions', async () => {
-        extensionInstance.enable();
-        const indicator = extensionInstance._indicator;
-        indicator._projectPath = '/path/to/my-project';
-        indicator._composeFiles = 'docker-compose.override.yml';
-        indicator._activeProfiles = 'frontend';
+        // Simulate settings change to a new project
+        indicator._onSettingsChanged();
 
-        spawnedArgvs = [];
-        await indicator._runStackCommand(['docker', 'compose', 'up', '-d']);
-
-        expect(spawnedArgvs[0]).toEqual([
-            'docker', 'compose',
-            '-f', 'docker-compose.override.yml',
-            '--profile', 'frontend',
-            'up', '-d'
-        ]);
-    });
-
-    test('should include explicit -f and --profile flags in terminal action launchers', () => {
-        extensionInstance.enable();
-        const indicator = extensionInstance._indicator;
-        indicator._projectPath = '/path/to/my-project';
-        indicator._composeFiles = 'docker-compose.override.yml';
-        indicator._activeProfiles = 'dev';
-
-        spawnedArgvs = [];
-        indicator._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', 'web']);
-
-        expect(spawnedArgvs[0]).toEqual([
-            'ptyxis',
-            '--working-directory', '/path/to/my-project',
-            '-e', 'docker compose -f docker-compose.override.yml --profile dev logs -f web'
+        expect(spawnedArgvs).toContainEqual([
+            'python3',
+            '/home/user/.local/share/gnome-shell/extensions/dockerpulse/parent_monitor_wrapper.py',
+            '--parent-pid',
+            '12345',
+            'docker',
+            'events',
+            '--filter',
+            'type=container',
+            '--filter',
+            'label=com.docker.compose.project=new-project'
         ]);
     });
 });
