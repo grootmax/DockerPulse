@@ -20,8 +20,17 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-bin
+
       - name: Install Dependencies
         run: npm ci
+
+      - name: Stage Extension Artifacts
+        run: make stage
+
+      - name: Audit Build Manifest
+        run: node audit-manifest.js
 
       - name: Run Syntax and Linter Validation (ESLint)
         run: npx eslint .

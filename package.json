@@ -4,8 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "stage": "make stage",
+    "audit": "node audit-manifest.js",
     "test": "node --experimental-vm-modules $(which jest) --testMatch '**/*.test.js' && node test.js",
-    "validate": "eslint . && tsc --project jsconfig.json && npm test"
+    "validate": "make stage && node audit-manifest.js && eslint . && tsc --project jsconfig.json && npm test"
   },
   "repository": {
     "type": "git",
