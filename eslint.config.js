@@ -29,7 +29,10 @@ export default [
                 describe: 'readonly',
                 test: 'readonly',
                 expect: 'readonly',
-                beforeEach: 'readonly'
+                beforeEach: 'readonly',
+                afterEach: 'readonly',
+                beforeAll: 'readonly',
+                afterAll: 'readonly'
             }
         }
     }
