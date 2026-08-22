@@ -39,6 +39,15 @@ jest.unstable_mockModule('gi://GLib', () => {
             PRIORITY_DEFAULT: 0,
             SOURCE_REMOVE: false,
             SOURCE_CONTINUE: true,
+            file_test: (path, flags) => {
+                if (!path || typeof path !== 'string') return false;
+                if (path.includes(';') || path.includes('&') || path.includes('|') || path.includes('$') || path.includes('`') || path.includes('\n')) return false;
+                if (path === '/non/existent/path') return false;
+                return true;
+            },
+            FileTest: {
+                IS_DIR: 1,
+            }
         }
     };
 }, { virtual: true });
@@ -445,7 +454,8 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         expect(spawnedArgvs[0]).toEqual([
             'ptyxis',
             '--working-directory', '/path/to/my-project',
-            '-e', 'docker exec -it my-container bash'
+            '--',
+            'docker', 'exec', '-it', 'my-container', 'bash'
         ]);
     });
 
@@ -642,5 +652,81 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         const hasComposeFile = latestEnv.some(item => item.startsWith('COMPOSE_FILE='));
         expect(hasProfiles).toBe(false);
         expect(hasComposeFile).toBe(false);
+    });
+
+    test('should block command execution and show notification if project path contains injection patterns or is missing', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+
+        sentNotifications = [];
+        spawnedArgvs = [];
+
+        // 1. Unsafe path with command injection
+        indicator._projectPath = '/path/to/project; rm -rf /';
+        indicator._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', 'web']);
+
+        expect(spawnedArgvs.length).toBe(0);
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].title).toBe('DockerPulse Security Warning');
+        expect(sentNotifications[0].body).toContain('Project path contains invalid or unsafe characters');
+
+        // 2. Non-existent path
+        sentNotifications = [];
+        indicator._projectPath = '/non/existent/path';
+        indicator._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', 'web']);
+
+        expect(spawnedArgvs.length).toBe(0);
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].title).toBe('DockerPulse Error');
+        expect(sentNotifications[0].body).toContain('Project directory does not exist');
+
+        // 3. Empty/missing path
+        sentNotifications = [];
+        indicator._projectPath = '';
+        indicator._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', 'web']);
+
+        expect(spawnedArgvs.length).toBe(0);
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].title).toBe('DockerPulse Error');
+        expect(sentNotifications[0].body).toContain('Project path is not configured or missing');
+    });
+
+    test('should block terminal execution and show notification if service name contains invalid characters', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+
+        sentNotifications = [];
+        spawnedArgvs = [];
+
+        // Unsafe service name containing shell metacharacters
+        const unsafeService = 'web; cat /etc/passwd';
+        indicator._spawnTerminalCommand(['docker', 'compose', 'exec', unsafeService, 'sh']);
+
+        expect(spawnedArgvs.length).toBe(0);
+        expect(sentNotifications.length).toBe(1);
+        expect(sentNotifications[0].title).toBe('DockerPulse Security Warning');
+        expect(sentNotifications[0].body).toContain('Service name "web; cat /etc/passwd" contains invalid characters');
+    });
+
+    test('should execute terminal commands using unjoined argument arrays without joining arguments', () => {
+        extensionInstance.enable();
+        const indicator = extensionInstance._indicator;
+        indicator._projectPath = '/path/to/my-project';
+
+        spawnedArgvs = [];
+
+        indicator._spawnTerminalCommand(['docker', 'compose', 'exec', 'service-web', 'sh']);
+
+        expect(spawnedArgvs.length).toBeGreaterThan(0);
+        const ptyxisCmd = spawnedArgvs[0];
+        // Ensure no argument was joined into a single string with spaces
+        expect(ptyxisCmd).toEqual([
+            'ptyxis',
+            '--working-directory', '/path/to/my-project',
+            '--',
+            'docker', 'compose', 'exec', 'service-web', 'sh'
+        ]);
+        expect(ptyxisCmd.includes('docker compose exec service-web sh')).toBe(false);
     });
 });

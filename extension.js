@@ -230,6 +230,104 @@ class DockerPulseIndicator extends PanelMenu.Button {
         }
     }
 
+    _showNotification(title, message) {
+        try {
+            if (typeof Main !== 'undefined' && Main.notifyError) {
+                Main.notifyError(title, message);
+            } else if (typeof Main !== 'undefined' && Main.notify) {
+                Main.notify(title, message);
+            } else if (typeof imports !== 'undefined' && imports.ui && imports.ui.main) {
+                const uiMain = imports.ui.main;
+                if (uiMain.notifyError) {
+                    uiMain.notifyError(title, message);
+                } else if (uiMain.notify) {
+                    uiMain.notify(title, message);
+                }
+            }
+        } catch (err) {
+            console.error(`[DockerPulse] Failed to send notification:`, err);
+        }
+    }
+
+    _checkDirectoryExists(path) {
+        if (!path || typeof path !== 'string') return false;
+        try {
+            if (GLib && typeof GLib.file_test === 'function') {
+                const isDirFlag = (GLib.FileTest && GLib.FileTest.IS_DIR !== undefined) ? GLib.FileTest.IS_DIR : 1;
+                return GLib.file_test(path, isDirFlag);
+            }
+        } catch (e) {}
+        try {
+            if (Gio && Gio.File && typeof Gio.File.new_for_path === 'function') {
+                let file = Gio.File.new_for_path(path);
+                if (!file.query_exists(null)) return false;
+                let info = file.query_info('standard::type', Gio.FileQueryInfoFlags.NONE, null);
+                return info && info.get_file_type() === Gio.FileType.DIRECTORY;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    _validateProjectPath(path, notifyOnFailure = false) {
+        if (!path || typeof path !== 'string' || !path.trim()) {
+            if (notifyOnFailure) {
+                this._showNotification(
+                    'DockerPulse Error',
+                    'Command execution blocked: Project path is not configured or missing.'
+                );
+            }
+            return false;
+        }
+
+        const injectionPattern = /[\;\&\|\$\`\<\>\(\)\"\'\n\r\t\0]/;
+        if (injectionPattern.test(path)) {
+            if (notifyOnFailure) {
+                this._showNotification(
+                    'DockerPulse Security Warning',
+                    'Command execution blocked: Project path contains invalid or unsafe characters.'
+                );
+            }
+            return false;
+        }
+
+        if (!this._checkDirectoryExists(path)) {
+            if (notifyOnFailure) {
+                this._showNotification(
+                    'DockerPulse Error',
+                    `Command execution blocked: Project directory does not exist: ${path}`
+                );
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    _validateServiceName(name, notifyOnFailure = false) {
+        if (!name || typeof name !== 'string') {
+            if (notifyOnFailure) {
+                this._showNotification(
+                    'DockerPulse Error',
+                    'Command execution blocked: Service or container name is missing.'
+                );
+            }
+            return false;
+        }
+
+        const validPattern = /^[a-zA-Z0-9_-]+$/;
+        if (!validPattern.test(name)) {
+            if (notifyOnFailure) {
+                this._showNotification(
+                    'DockerPulse Security Warning',
+                    `Command execution blocked: Service name "${name}" contains invalid characters.`
+                );
+            }
+            return false;
+        }
+
+        return true;
+    }
+
     _discoverSshAuthSock() {
         // 1. Check current process / GLib environ
         let env = getSafeEnviron();
@@ -642,7 +740,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     _startEventStream() {
         this._stopEventStream();
         
-        if (!this._projectPath) return;
+        if (!this._validateProjectPath(this._projectPath, true)) return;
 
         try {
             this._eventCancellable = new Gio.Cancellable();
@@ -908,7 +1006,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
 
     async _refreshState() {
         if (this._destroyed) return;
-        if (!this._projectPath) {
+        if (!this._validateProjectPath(this._projectPath, false)) {
             this._cachedContainers = [];
             this._cachedStatus = 'grey';
             this._state = Object.freeze({
@@ -1201,12 +1299,14 @@ class DockerPulseIndicator extends PanelMenu.Button {
                 // Quick Actions for Container
                 let logsItem = new PopupMenu.PopupMenuItem('Stream Logs');
                 logsItem.connect('activate', () => {
+                    if (!this._validateServiceName(service, true)) return;
                     this._spawnTerminalCommand(['docker', 'compose', 'logs', '-f', service]);
                 });
                 containerSubMenu.menu.addMenuItem(logsItem);
 
                 let shellItem = new PopupMenu.PopupMenuItem('Interactive Shell');
                 shellItem.connect('activate', () => {
+                    if (!this._validateServiceName(service, true)) return;
                     this._spawnTerminalCommand(['docker', 'compose', 'exec', service, 'sh']);
                 });
                 containerSubMenu.menu.addMenuItem(shellItem);
@@ -1249,7 +1349,7 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     async _runStackCommand(argv) {
-        if (!this._projectPath) return;
+        if (!this._validateProjectPath(this._projectPath, true)) return;
         try {
             let launcher = new Gio.SubprocessLauncher({
                 flags: Gio.SubprocessFlags.NONE,
@@ -1282,33 +1382,47 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _spawnTerminalCommand(commandArgs) {
-        if (!this._projectPath) return;
+        if (!this._validateProjectPath(this._projectPath, true)) return;
+
+        if (Array.isArray(commandArgs)) {
+            const staticKeywords = new Set([
+                'docker', 'compose', 'logs', 'exec', 'sh', 'bash',
+                'docker-compose', 'ps', 'up', 'restart', 'stop', '-f', '-it', '-i', '-t'
+            ]);
+            for (let arg of commandArgs) {
+                if (!arg.startsWith('-') && !staticKeywords.has(arg)) {
+                    if (!this._validateServiceName(arg, true)) {
+                        return;
+                    }
+                }
+            }
+        }
 
         let fullCommand = this._buildComposeCommand(commandArgs);
 
         let ptyxisArgs = [
             'ptyxis',
             '--working-directory', this._projectPath,
-            '-e', fullCommand.join(' '),
-        ];
+            '--',
+        ].concat(fullCommand);
 
         let gnomeTerminalArgs = [
             'gnome-terminal',
-            `--working-directory=${this._projectPath}`,
+            '--working-directory', this._projectPath,
             '--',
         ].concat(fullCommand);
 
         let kgxArgs = [
             'kgx',
             '--working-directory', this._projectPath,
-            '-e', fullCommand.join(' '),
-        ];
+            '--',
+        ].concat(fullCommand);
 
         let xtermArgs = [
             'xterm',
             '-wdir', this._projectPath,
-            '-e', fullCommand.join(' '),
-        ];
+            '-e',
+        ].concat(fullCommand);
 
         let spawnWithEnv = (args) => {
             let launcher = new Gio.SubprocessLauncher({
