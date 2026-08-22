@@ -5,6 +5,7 @@ import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 
 import { ProcessRegistry } from './processRegistry.js';
+import { EventManager } from './eventManager.js';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -151,6 +152,12 @@ class DockerPulseIndicator extends PanelMenu.Button {
         this._cachedProjectName = '';
         this._unhealthyContainers = new Set();
         this._notificationTimerId = null;
+
+        // Initialize standalone EventManager
+        this._eventManager = new EventManager();
+        this._eventManagerListener = this._eventManager.addListener(() => {
+            this._refreshState();
+        });
 
         // Local state cache is read from when menu opens (preventing synchronous system calls)
         this.menu.connect('menu-opened', () => {
@@ -720,127 +727,51 @@ class DockerPulseIndicator extends PanelMenu.Button {
         }
     }
 
+    get _eventProc() {
+        return this._eventManager ? this._eventManager._eventProc : null;
+    }
+
+    get _eventCancellable() {
+        return this._eventManager ? this._eventManager._eventCancellable : null;
+    }
+
+    get _reconnectTimerId() {
+        return this._eventManager ? this._eventManager._reconnectTimerId : null;
+    }
+
+    get _debounceId() {
+        return this._eventManager ? this._eventManager._debounceId : null;
+    }
+
     _stopEventStream() {
-        if (this._eventProc) {
-            try {
-                this._eventProc.force_exit();
-            } catch (e) {}
-            this._eventProc = null;
-        }
-        if (this._eventCancellable) {
-            this._eventCancellable.cancel();
-            this._eventCancellable = null;
-        }
-        if (this._reconnectTimerId) {
-            GLib.source_remove(this._reconnectTimerId);
-            this._reconnectTimerId = null;
+        if (this._eventManager) {
+            this._eventManager.stop();
         }
     }
 
     _startEventStream() {
         this._stopEventStream();
-        
+
         if (!this._validateProjectPath(this._projectPath, true)) return;
 
-        try {
-            this._eventCancellable = new Gio.Cancellable();
-            let launcher = new Gio.SubprocessLauncher({
-                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
-            });
-            launcher.set_cwd(this._projectPath);
-            let env = this._getEnvWithResolved();
-            if (typeof launcher.set_environ === 'function') {
-                launcher.set_environ(env);
-            }
-            
-            // Determine project name from settings, fallback to path, then "DockerPulse"
-            let projectName = this._cachedProjectName;
-            if (!projectName && this._projectPath) {
-                let nameSetting = getSettingString(this._settings, 'project-name', '');
-                projectName = (nameSetting ? nameSetting.split('/').pop() : '') || (this._projectPath.split('/').pop() || 'DockerPulse');
-                this._cachedProjectName = projectName;
-            }
-
-            // Get current parent PID and path to wrapper
-            let parentPid = GLib.get_pid().toString();
-            let wrapperPath = this._extension.path + '/parent_monitor_wrapper.py';
-
-            // Stream container events within the self-terminating wrapper with native daemon filter
-            let argv = [
-                'python3',
-                wrapperPath,
-                '--parent-pid',
-                parentPid,
-                'docker',
-                'events',
-                '--filter',
-                'type=container',
-                '--filter',
-                `label=com.docker.compose.project=${projectName}`
-            ];
-            this._eventProc = launcher.spawnv(argv);
-            if (this._extension && this._extension._registry) {
-                this._extension._registry.register(this._eventProc);
-            }
-
-            let stdoutPipe = this._eventProc.get_stdout_pipe();
-            let dataStream = new Gio.DataInputStream({
-                base_stream: stdoutPipe,
-            });
-
-            this._readLine(dataStream);
-        } catch (e) {
-            console.error('[DockerPulse] Error starting event stream:', e);
-            // Fallback: will rely on periodic poll
-        }
-    }
-
-    _readLine(dataStream) {
-        if (!this._eventCancellable || this._eventCancellable.is_cancelled()) return;
-
-        dataStream.read_line_async(GLib.PRIORITY_DEFAULT, this._eventCancellable, (stream, res) => {
-            try {
-                let [line, length] = stream.read_line_finish_utf8(res);
-                if (line !== null) {
-                    this._triggerDebouncedRefresh();
-                    this._readLine(stream);
-                } else {
-                    // Subprocess exited
-                    this._handleEventStreamClosed();
-                }
-            } catch (e) {
-                if (e.matches && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) {
-                    return;
-                }
-                console.error('[DockerPulse] Error reading from stream:', e);
-                this._handleEventStreamClosed();
-            }
-        });
-    }
-
-    _handleEventStreamClosed() {
-        this._eventProc = null;
-        
-        // Back off reconnect delay
-        if (!this._reconnectDelay) {
-            this._reconnectDelay = 5;
-        } else {
-            this._reconnectDelay = Math.min(60, this._reconnectDelay * 2);
+        let projectName = this._cachedProjectName;
+        if (!projectName && this._projectPath) {
+            let nameSetting = getSettingString(this._settings, 'project-name', '');
+            projectName = (nameSetting ? nameSetting.split('/').pop() : '') || (this._projectPath.split('/').pop() || 'DockerPulse');
+            this._cachedProjectName = projectName;
         }
 
-        if (this._reconnectTimerId) {
-            GLib.source_remove(this._reconnectTimerId);
-            this._reconnectTimerId = null;
-        }
+        let registry = this._extension ? this._extension._registry : null;
+        let extensionPath = this._extension ? this._extension.path : '';
+        let env = this._getEnvWithResolved();
 
-        // Retry starting stream after reconnectDelay seconds if still active
-        if (this._projectPath && this._eventCancellable && !this._eventCancellable.is_cancelled()) {
-            this._reconnectTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._reconnectDelay, () => {
-                this._reconnectTimerId = null;
-                if (this._projectPath && (!this._eventProc)) {
-                    this._startEventStream();
-                }
-                return GLib.SOURCE_REMOVE;
+        if (this._eventManager) {
+            this._eventManager.start({
+                projectPath: this._projectPath,
+                projectName: projectName,
+                extensionPath: extensionPath,
+                registry: registry,
+                env: env
             });
         }
     }
@@ -850,15 +781,11 @@ class DockerPulseIndicator extends PanelMenu.Button {
     }
 
     _triggerDebouncedRefresh() {
-        if (this._debounceId) {
-            GLib.source_remove(this._debounceId);
-            this._debounceId = null;
-        }
-        this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
-            this._debounceId = null;
+        if (this._eventManager) {
+            this._eventManager.triggerDebouncedRefresh();
+        } else {
             this._refreshState();
-            return GLib.SOURCE_REMOVE;
-        });
+        }
     }
 
     _parseDockerComposePsOutput(outputStr) {
@@ -1457,6 +1384,14 @@ class DockerPulseIndicator extends PanelMenu.Button {
     destroy() {
         this._destroyed = true;
         this._stopEventStream();
+        if (this._eventManagerListener) {
+            this._eventManagerListener();
+            this._eventManagerListener = null;
+        }
+        if (this._eventManager) {
+            this._eventManager.destroy();
+            this._eventManager = null;
+        }
         if (this._settings && this._settingsId) {
             this._settings.disconnect(this._settingsId);
             this._settingsId = null;
@@ -1482,27 +1417,19 @@ export default class DockerPulseExtension extends Extension {
         this._registry = new ProcessRegistry();
         this._indicator = new DockerPulseIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
-
-        try {
-            let env = this._indicator._getEnvWithResolved();
-            this._registry.spawn(['docker', 'events', '--format', '{{json .}}'], Gio.SubprocessFlags.NONE, env);
-            console.log('Docker events listener spawned and registered.');
-        } catch (e) {
-            console.error('[DockerPulse] Failed to spawn docker events:', e);
-        }
     }
 
     disable() {
         console.log('[DockerPulse] Disabling extension...');
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
         if (this._registry) {
             const count = this._registry.activeCount;
             this._registry.cleanup();
             this._registry = null;
             console.log(`[DockerPulse] Cleaned up registry. Terminated ${count} background processes.`);
-        }
-        if (this._indicator) {
-            this._indicator.destroy();
-            this._indicator = null;
         }
     }
 }
