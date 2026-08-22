@@ -2,7 +2,7 @@ UUID = dockerpulse@github.com
 EXT_DIR = $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 STAGE_DIR = build_staging
 
-MANIFEST = extension.js prefs.js processRegistry.js metadata.json stylesheet.css parent_monitor_wrapper.py schemas
+MANIFEST = extension.js prefs.js processRegistry.js eventManager.js metadata.json stylesheet.css parent_monitor_wrapper.py schemas
 
 .PHONY: all compile stage audit install clean validate
 

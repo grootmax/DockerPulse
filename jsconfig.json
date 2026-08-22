@@ -12,7 +12,8 @@
   },
   "include": [
     "declarations.d.ts",
-    "processRegistry.js"
+    "processRegistry.js",
+    "eventManager.js"
   ],
   "exclude": [
     "node_modules",

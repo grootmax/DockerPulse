@@ -350,6 +350,15 @@ describe('DockerPulseExtension & Wrapper Spawning', () => {
         }
     });
 
+    test('should enable without spawning unparsed global Docker event processes', () => {
+        spawnedArgvs = [];
+        extensionInstance.enable();
+        const globalDockerEvents = spawnedArgvs.filter(argv =>
+            argv.length >= 4 && argv[0] === 'docker' && argv[1] === 'events' && argv[2] === '--format'
+        );
+        expect(globalDockerEvents.length).toBe(0);
+    });
+
     test('should spawn the wrapper with correct arguments including parent pid and command', () => {
         extensionInstance.enable();
         
